@@ -1,0 +1,49 @@
+# ===== Бинари llama.cpp (скачиваются отдельно) =====
+bin/
+llama-server
+llama-server.exe
+
+# ===== GGUF-модели (1+ ГБ, лицензии моделей) =====
+models/
+*.gguf
+
+# ===== Сборка =====
+go-chat-local
+go-chat-local.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ===== Локальные настройки (машина-зависимые) =====
+settings.json
+
+# ===== Логи =====
+*.log
+llama-server.log
+
+# ===== Дизайн-черновики =====
+html2.html
+
+# ===== Пользовательские базы знаний (не публикуются) =====
+# Примеры (go.md, python.md, bash.md) — в репозитории.
+# Свои рабочие базы держите локально:
+bases/отпуски.md
+bases/отпуски2.md
+# или все не-примерные файлы:
+# bases/*.md
+# !bases/go.md
+# !bases/python.md
+# !bases/bash.md
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ===== Go =====
+*.test
+*.out
+vendor/

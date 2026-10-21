@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Go Chat Local — локальный AI-ассистент</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<main id="top">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div>
+      <span class="hero-badge fade-up">100% локально · <span id="heroHost">127.0.0.1:8080</span></span>
+      <h1 class="fade-up" style="animation-delay:.08s">Локальный AI-ассистент<br>с <span>базами знаний</span></h1>
+      <p class="fade-up" style="animation-delay:.16s">Задавайте вопросы — модель отвечает, опираясь на документы из папки <code class="mono" style="color:var(--cyan)">bases/</code>. Никаких облаков: всё работает на вашей машине.</p>
+      <div class="hero-ctas fade-up" style="animation-delay:.24s">
+        <a class="btn btn-primary" href="#app">Открыть чат →</a>
+        <button class="btn btn-ghost-cyan" data-goto-tab="bases">Смотреть базы</button>
+      </div>
+      <div class="hero-stats fade-up" style="animation-delay:.32s">
+        <div class="stat"><span class="mono">Модель</span><b id="heroModel">model.gguf</b></div>
+        <div class="stat"><span class="mono">Базы знаний</span><b><em id="heroBases">0</em> файлов</b></div>
+        <div class="stat"><span class="mono">Токенов в облако</span><b><em>0</em></b></div>
+      </div>
+    </div>
+    <div class="hero-visual fade-up" style="animation-delay:.2s" aria-hidden="true">
+      <div class="blob blob-1"></div><div class="blob blob-2"></div><div class="blob blob-3"></div>
+      <div class="ring"></div>
+      <div class="mock-chat glass">
+        <div class="mock-row"><span class="mock-avatar"></span><div class="mock-bubble">Привет! Я локальный AI-ассистент ✦<div class="mock-src">источник: bases/go.md</div></div></div>
+        <div class="mock-row user"><div class="mock-bubble user">Что ты знаешь про go</div></div>
+        <div class="mock-row"><span class="mock-avatar"></span><div class="mock-bubble"><span class="dots"><i></i><i></i><i></i></span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ APP ============ -->
+  <section class="app" id="app">
+    <!-- SIDEBAR -->
+    <aside class="sidebar glass" id="sidebar" aria-label="Панель управления">
+      <div class="tabs" role="tablist" aria-label="Разделы">
+        <button role="tab" aria-selected="true"  class="active" data-tab="chat"     id="tab-chat">Чат</button>
+        <button role="tab" aria-selected="false" data-tab="settings" id="tab-settings">Настройки</button>
+        <button role="tab" aria-selected="false" data-tab="bases"    id="tab-bases">Базы</button>
+      </div>
+
+      <!-- TAB: CHAT -->
+      <div class="tab-panel active" id="panel-chat" role="tabpanel" aria-labelledby="tab-chat">
+        <div class="status-card" aria-label="Статус системы">
+          <div class="status-row"><span class="k">Модель</span><span class="v" id="modelName">—</span></div>
+          <div class="status-row"><span class="k">Сервер</span><span class="v" id="serverUrl">—</span></div>
+          <div class="status-row"><span class="k">Статус</span><span class="badge ok" id="statusBadge">проверка…</span></div>
+          <div class="status-row"><span class="k">Базы</span><span class="v" id="basesCount">0</span></div>
+          <div class="status-row"><span class="k">Сообщений</span><span class="v" id="msgCount">1</span></div>
+        </div>
+
+        <div class="side-label">История диалогов</div>
+        <div id="sessions" role="list">
+          <button class="session active" role="listitem">Текущий диалог <span class="n" id="sessionN">0</span></button>
+        </div>
+        <button class="btn btn-block btn-sm" id="btnNewChat" style="margin-top:10px">＋ Новый чат</button>
+
+        <div class="side-actions">
+          <button class="btn" id="btnClear">Очистить историю</button>
+          <button class="btn" id="btnReload">Перечитать базы</button>
+          <button class="btn" id="btnRestart">Перезапустить сервер</button>
+        </div>
+      </div>
+
+      <!-- TAB: SETTINGS -->
+      <div class="tab-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
+        <div class="field">
+          <label for="cfgCtx">Контекст <output id="cfgCtxOut">4096</output></label>
+          <input type="range" id="cfgCtx" min="512" max="16384" step="128" value="4096" aria-label="Размер контекста">
+          <small>Сколько токенов модель помнит в диалоге. Требует перезапуска сервера.</small>
+        </div>
+        <div class="field">
+          <label for="cfgThreads">Потоки CPU <output id="cfgThreadsOut">0</output></label>
+          <input type="range" id="cfgThreads" min="1" max="32" step="1" value="0" aria-label="Потоки CPU">
+          <small>Требует перезапуска сервера.</small>
+        </div>
+        <div class="field">
+          <label for="cfgTemp">Температура <output id="cfgTempOut">0.70</output></label>
+          <input type="range" id="cfgTemp" min="0" max="2" step="0.05" value="0.7" aria-label="Температура">
+          <small>Выше — креативнее, ниже — точнее.</small>
+        </div>
+        <div class="field">
+          <label for="cfgMaxTok">Max tokens <output id="cfgMaxTokOut">512</output></label>
+          <input type="range" id="cfgMaxTok" min="64" max="4096" step="32" value="512" aria-label="Максимум токенов в ответе">
+        </div>
+        <div class="field">
+          <label for="cfgTopP">Top-p <output id="cfgTopPOut">0.90</output></label>
+          <input type="range" id="cfgTopP" min="0" max="1" step="0.05" value="0.9" aria-label="Top-p">
+        </div>
+        <div class="field" id="cfgMsg" style="min-height:18px;font-family:var(--mono);font-size:.74rem"></div>
+        <button class="btn btn-primary btn-block" id="btnSaveCfg">Сохранить настройки</button>
+      </div>
+
+      <!-- TAB: BASES -->
+      <div class="tab-panel" id="panel-bases" role="tabpanel" aria-labelledby="tab-bases">
+        <div class="side-label" style="margin-top:0">Папка bases/ · <span id="basesCount2">0</span> файлов</div>
+        <div id="basesList"></div>
+        <button class="btn btn-block btn-ghost-cyan" id="btnReload2" style="margin-top:14px">⟳ Перечитать все базы</button>
+
+        <div class="bases-edit" style="margin-top:18px">
+          <div class="side-label">Редактор</div>
+          <div id="baseEmpty" class="empty" style="padding:18px 0">
+            <div class="art">📄</div>
+            <b>Выберите базу слева</b>
+            <span class="mono">или создайте новую</span>
+          </div>
+          <div id="baseEditor" style="display:none">
+            <div class="field">
+              <label for="baseName">Имя файла (без .md)</label>
+              <input class="input mono" id="baseName" placeholder="topic">
+            </div>
+            <div class="field">
+              <label for="baseDesc">Описание (для роутинга)</label>
+              <textarea class="input" id="baseDesc" rows="2"></textarea>
+            </div>
+            <div class="field">
+              <label for="baseContent">Содержимое (Markdown)</label>
+              <textarea class="input mono" id="baseContent" rows="14" style="resize:vertical"></textarea>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center">
+              <button class="btn btn-primary" id="btnSaveBase">💾 Сохранить</button>
+              <button class="btn" id="btnDeleteBase" style="color:var(--rose);border-color:rgba(251,113,133,.4)">Удалить</button>
+              <button class="btn btn-sm" id="btnNewBase" style="margin-left:auto">＋ Новая</button>
+            </div>
+            <div id="baseMsg" class="mono" style="font-size:.74rem;min-height:18px;margin-top:8px"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CHAT -->
+    <div class="chat-col glass" role="region" aria-label="Окно чата">
+      <div class="chat-head">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="title">Диалог с ассистентом</span>
+        <span class="mono" id="chatHeadCtx">ctx 4096</span>
+      </div>
+
+      <div class="chat-log" id="chatLog" aria-live="polite" aria-label="Сообщения">
+        <div class="msg">
+          <span class="avatar" aria-hidden="true">🤖</span>
+          <div class="bubble-wrap">
+            <div class="bubble">Привет! Я локальный AI-ассистент. Задайте вопрос — могу опираться на базы знаний из папки <code class="mono" style="color:var(--cyan)">bases/</code>.</div>
+          </div>
+        </div>
+      </div>
+
+      <form class="composer" id="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="1" maxlength="4000"
+            placeholder="Введите вопрос…  (Enter — отправить, Shift+Enter — перенос)"
+            aria-label="Поле ввода вопроса"></textarea>
+          <button type="submit" class="send-btn" id="sendBtn">Отправить <span aria-hidden="true">↑</span></button>
+        </div>
+        <div class="composer-meta">
+          <span class="mono">Enter — отправить · Shift+Enter — перенос</span>
+          <span class="mono" id="charCount">0 / 4000</span>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+
+
+<div class="overlay" id="overlay"></div>
+<div id="toasts" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
