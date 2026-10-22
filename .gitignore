@@ -1,3 +1,12 @@
+# ===== Node / Web =====
+node_modules/
+build/
+dist/
+coverage/
+.env*
+!.env.example
+bun.lock
+
 # ===== Бинари llama.cpp (скачиваются отдельно) =====
 bin/
 llama-server
@@ -30,11 +39,6 @@ html2.html
 # Свои рабочие базы держите локально:
 bases/отпуски.md
 bases/отпуски2.md
-# или все не-примерные файлы:
-# bases/*.md
-# !bases/go.md
-# !bases/python.md
-# !bases/bash.md
 
 # ===== IDE / OS =====
 .vscode/

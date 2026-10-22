@@ -1,0 +1,264 @@
+@import "tailwindcss";
+
+/* ================= LAICHAT DESIGN SYSTEM TOKENS ================= */
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0f;
+  --bg-2: #0e0e16;
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-2: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-2: rgba(255, 255, 255, 0.16);
+  --text: #f4f4f6;
+  --muted: #9a9aad;
+  --accent: #f472b6;
+  --accent-2: #ec4899;
+  --cyan: #22d3ee;
+  --violet: #a78bfa;
+  --rose: #fb7185;
+  --green: #34d399;
+  --amber: #fbbf24;
+  --prism: linear-gradient(135deg, #22d3ee, #a78bfa 50%, #f472b6);
+  --prism-soft: linear-gradient(135deg, rgba(34, 211, 238, 0.16), rgba(167, 139, 250, 0.16) 50%, rgba(244, 114, 182, 0.16));
+  --r-s: 10px;
+  --r-m: 16px;
+  --r-l: 24px;
+  --r-xl: 32px;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --glow-pink: 0 8px 32px -6px rgba(244, 114, 182, 0.45);
+  --shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.6);
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.55;
+  background-image:
+    radial-gradient(700px 500px at 85% -10%, rgba(167, 139, 250, 0.10), transparent 60%),
+    radial-gradient(600px 500px at -10% 30%, rgba(34, 211, 238, 0.07), transparent 60%),
+    radial-gradient(800px 600px at 50% 110%, rgba(244, 114, 182, 0.08), transparent 60%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(244, 114, 182, 0.35);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 99px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mono {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+
+.glass {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+}
+
+/* ================= ANIMATIONS ================= */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(22px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes floatBlob {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(14px, -18px) scale(1.06); }
+}
+
+@keyframes blinkDot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-4px); }
+}
+
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+}
+
+@keyframes spinSlow {
+  to { transform: rotate(360deg); }
+}
+
+.anim-fade-up {
+  animation: fadeUp 0.45s cubic-bezier(0.22, 0.8, 0.32, 1);
+}
+
+.anim-float {
+  animation: floatBlob 9s ease-in-out infinite;
+}
+
+.anim-spin-slow {
+  animation: spinSlow 40s linear infinite;
+}
+
+.anim-pulse-dot {
+  animation: pulseDot 2s infinite;
+}
+
+/* ================= BUTTONS ================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 99px;
+  padding: 10px 20px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  transition: all 0.3s cubic-bezier(0.22, 0.8, 0.32, 1);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  transform: scale(1.02);
+  border-color: var(--border-2);
+  background: var(--panel-2);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  border-color: transparent;
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  box-shadow: var(--glow-pink);
+  background: linear-gradient(135deg, var(--accent), var(--rose));
+}
+
+.btn-cyan:hover:not(:disabled) {
+  border-color: rgba(34, 211, 238, 0.5);
+  box-shadow: 0 8px 28px -8px rgba(34, 211, 238, 0.35);
+}
+
+/* ================= SLIDERS & INPUTS ================= */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 99px;
+  cursor: pointer;
+  background: linear-gradient(90deg, var(--cyan), var(--violet), var(--accent)) 0/var(--val, 50%) 100% no-repeat, rgba(255, 255, 255, 0.08);
+  transition: filter 0.3s;
+}
+input[type=range]:hover {
+  filter: brightness(1.25);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 2px 12px rgba(244, 114, 182, 0.5);
+  transition: transform 0.2s;
+}
+input[type=range]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+input[type=range]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+}
+
+/* ================= CHAT MARKDOWN RENDERING ================= */
+.markdown-body {
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+.markdown-body p + p {
+  margin-top: 10px;
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 20px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+.markdown-body ul {
+  list-style-type: disc;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+}
+.markdown-body li {
+  margin: 4px 0;
+}
+.markdown-body code:not(pre code) {
+  font-family: var(--mono);
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--cyan);
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 0.86em;
+}
+.markdown-body pre {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 10px 0;
+  overflow-x: auto;
+  font-size: 0.84em;
+  font-family: var(--mono);
+}
+.markdown-body blockquote {
+  margin: 10px 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--accent);
+  background: rgba(244, 114, 182, 0.05);
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  margin: 14px 0 8px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #fff;
+}
+.markdown-body h1 { font-size: 1.3em; }
+.markdown-body h2 { font-size: 1.18em; }
+.markdown-body h3 { font-size: 1.05em; }
+.markdown-body a {
+  color: var(--cyan);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 14px 0;
+}

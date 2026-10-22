@@ -1,0 +1,6 @@
+{
+  "name": "LAIChat",
+  "description": "Локальный AI-чат с базами знаний, параллельным анализом тем, классификатором и веб-интерфейсом на базе проекта SwargHUB/LAIChat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
