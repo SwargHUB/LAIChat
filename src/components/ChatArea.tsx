@@ -1,7 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
-import { Send, Copy, Check, ChevronRight, Sparkles, Trash2, ArrowUpRight } from 'lucide-react';
+import { Send, Copy, Check, ChevronRight, Sparkles, Trash2, ArrowUpRight, Clock } from 'lucide-react';
 import { renderMarkdown } from '../utils/markdown';
+
+/** 1200 -> "1.2 сек", 45000 -> "45 сек" */
+function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)} мс`;
+  const s = ms / 1000;
+  return s < 60 ? `${s.toFixed(1)} сек` : `${Math.floor(s / 60)} мин ${Math.round(s % 60)} сек`;
+}
 
 interface ChatAreaProps {
   messages: ChatMessage[];
@@ -200,11 +208,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           return (
             <div key={m.id} className="flex items-start gap-3.5 max-w-[90%] anim-fade-up group">
               <div className="w-9 h-9 rounded-xl bg-[var(--prism)] grid place-items-center text-sm flex-none shadow-[var(--glow-pink)]">
-                🤖
+                {m.isError ? '⚠️' : '🤖'}
               </div>
 
               <div className="flex-1 space-y-2 min-w-0">
-                <div className="relative p-4 rounded-3xl rounded-tl-sm bg-gradient-to-br from-white/[0.08] to-white/[0.02] border border-[var(--border)] backdrop-blur-md shadow-lg">
+                <div
+                  className={`relative p-4 rounded-3xl rounded-tl-sm backdrop-blur-md shadow-lg ${
+                    m.isError
+                      ? 'bg-[var(--rose)]/10 border border-[var(--rose)]/35'
+                      : 'bg-gradient-to-br from-white/[0.08] to-white/[0.02] border border-[var(--border)]'
+                  }`}
+                >
                   {/* Quick copy button */}
                   <button
                     onClick={() => handleCopyMessage(m.id, m.content)}
@@ -220,9 +234,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                   {/* Rendered text */}
                   <div
-                    className="markdown-body text-white/90 text-sm"
+                    className={`markdown-body text-sm ${m.isError ? 'text-[var(--rose)]' : 'text-white/90'}`}
                     dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
                   />
+
+                  {/* Action: start a new chat after context overflow / timeout */}
+                  {m.action === 'new_chat' && (
+                    <div className="mt-3 pt-3 border-t border-[var(--rose)]/20 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={onClearChat}
+                        className="btn btn-sm !py-1.5 text-xs border-[var(--accent)]/50 text-white hover:border-[var(--accent)] flex items-center gap-1.5"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Новый чат
+                      </button>
+                      <span className="text-[10px] font-mono text-[var(--muted)]">
+                        очистит историю и сессию
+                      </span>
+                    </div>
+                  )}
 
                   {/* Source citation */}
                   {m.source && (
@@ -231,10 +261,33 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       <span>источник: bases/{m.source.toLowerCase()}.md</span>
                     </div>
                   )}
+
+                  {/* Execution timing */}
+                  {m.timings && (
+                    <div
+                      className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-[var(--muted)]"
+                      title="Замеры времени выполнения запроса к модели"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-[var(--accent)]" />
+                        <span className="text-white/70">{formatMs(m.timings.total_ms)}</span>
+                        всего
+                      </span>
+                      {m.timings.bases_count > 0 && (
+                        <span>
+                          {m.timings.analysis_mode === 'parallel'
+                            ? `анализ ${formatMs(m.timings.analysis_ms)} · ${m.timings.bases_count} баз`
+                            : 'анализ отключён'}
+                        </span>
+                      )}
+                      <span>ответ {formatMs(m.timings.answer_ms)}</span>
+                      <span>{m.timings.response_chars} симв.</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* LAIChat Signature: Parallel Analyses Breakdown */}
-                {m.analyses && m.analyses.length > 0 && (
+                {m.analyses && m.analyses.length > 0 && m.timings?.analysis_mode !== 'heuristic' && (
                   <details className="analyses group/details rounded-2xl border border-[var(--border)] bg-black/20 overflow-hidden text-xs">
                     <summary className="cursor-pointer p-3 font-mono text-xs text-[var(--muted)] flex items-center gap-2 hover:bg-white/5 transition-colors select-none">
                       <ChevronRight className="w-3.5 h-3.5 text-[var(--accent)] group-open/details:rotate-90 transition-transform" />

@@ -65,6 +65,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [localSettings, setLocalSettings] = useState<Settings>(settings);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
+  // Локальные .gguf из папки models/ (приходят с сервера)
+  const localModels = serverState?.local_models ?? [];
+
+  // Облачные имена моделей — если такое имя значит пользователь раньше сидел
+  // на Gemini/OpenAI, для локального режима оно бессмысленно.
+  const CLOUD_MODEL_RE = /^(gemini|deepseek|gpt-|o[134]-|local-model)/i;
+  const resolveLocalModelName = (current?: string): string => {
+    if (current && !CLOUD_MODEL_RE.test(current)) return current;
+    return localModels[0] || current || 'local';
+  };
+
   // Bases editor local state
   const [editorName, setEditorName] = useState('');
   const [editorDesc, setEditorDesc] = useState('');
@@ -374,7 +385,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     ...localSettings,
                     backend_provider: 'llama_cpp',
                     llama_server_url: localSettings.llama_server_url || 'http://127.0.0.1:8080',
-                    model_name: 'local-model',
+                    // Не затираем настройки модели: если текущее имя не похоже
+                    // на локальное — подставляем первую найденную в models/.
+                    model_name: resolveLocalModelName(localSettings.model_name),
                   })
                 }
                 className={`p-2 rounded-xl text-left border text-xs transition-all cursor-pointer ${
@@ -618,6 +631,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   />
                 </div>
 
+                {localModels.length > 0 ? (
+                  <div>
+                    <label className="text-[10px] font-mono text-[var(--muted)] block mb-1">
+                      Модель из папки models/ ({localModels.length}):
+                    </label>
+                    <select
+                      value={localModels.includes(localSettings.model_name || '') ? localSettings.model_name : '__custom__'}
+                      onChange={(e) =>
+                        setLocalSettings({
+                          ...localSettings,
+                          model_name: e.target.value === '__custom__' ? localSettings.model_name || '' : e.target.value,
+                        })
+                      }
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[var(--accent)]"
+                    >
+                      {localModels.map((m) => (
+                        <option key={m} value={m} className="bg-black">
+                          {m}.gguf
+                        </option>
+                      ))}
+                      <option value="__custom__" className="bg-black">
+                        — другое имя —
+                      </option>
+                    </select>
+                  </div>
+                ) : null}
+
                 <div>
                   <label className="text-[10px] font-mono text-[var(--muted)] block mb-1">
                     Имя модели:
@@ -629,6 +669,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       setLocalSettings({ ...localSettings, model_name: e.target.value })
                     }
                     placeholder="qwen2.5-coder, mistral, llama3.2..."
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[var(--accent)]"
+                  />
+                  {localModels.length === 0 ? (
+                    <div className="text-[9px] text-[var(--amber)] mt-1">
+                      В папке models/ нет .gguf — положите туда модель.
+                    </div>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-mono text-[var(--muted)] block mb-1">
+                    Таймаут ответа (сек):
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={3600}
+                    step={5}
+                    value={localSettings.request_timeout ?? 300}
+                    onChange={(e) =>
+                      setLocalSettings({
+                        ...localSettings,
+                        request_timeout: Number(e.target.value) || 300,
+                      })
+                    }
                     className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[var(--accent)]"
                   />
                 </div>
@@ -661,6 +726,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
             )}
+          </div>
+
+          {/* Общие параметры запроса — отдельный блок под провайдерами */}
+          <div className="space-y-2.5 pt-3 mt-1 border-t border-white/10">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--muted)]">
+              Параметры запроса
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setLocalSettings({
+                  ...localSettings,
+                  parallel_analysis: !(localSettings.parallel_analysis !== false),
+                })
+              }
+              className="w-full flex items-center justify-between gap-3 p-2.5 rounded-xl border border-white/10 bg-black/20 hover:border-white/20 transition-all text-left"
+            >
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold text-white">
+                  Параллельный анализ баз
+                </div>
+                <div className="text-[9px] text-[var(--muted)] mt-0.5 leading-snug">
+                  {localSettings.parallel_analysis !== false
+                    ? 'Модель опрашивает все базы — точнее, но медленнее'
+                    : 'База выбирается по словам, без запроса к модели — быстрее'}
+                </div>
+              </div>
+              <span
+                className={`shrink-0 font-mono text-[9px] uppercase tracking-wider px-2 py-1 rounded-full border transition-all ${
+                  localSettings.parallel_analysis !== false
+                    ? 'bg-[var(--prism-soft)] text-[var(--green)] border-[var(--green)]/40'
+                    : 'bg-black/40 text-[var(--muted)] border-white/10'
+                }`}
+              >
+                {localSettings.parallel_analysis !== false ? 'вкл' : 'выкл'}
+              </span>
+            </button>
+
+            <div>
+              <label className="text-[10px] font-mono text-[var(--muted)] block mb-1">
+                Таймаут ответа (сек)
+              </label>
+              <input
+                type="number"
+                min={5}
+                max={3600}
+                step={5}
+                value={localSettings.request_timeout ?? 300}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    request_timeout: Number(e.target.value) || 300,
+                  })
+                }
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[var(--accent)]"
+              />
+              <div className="text-[9px] text-[var(--muted)] mt-1">
+                Локальный сервер отвечает последовательно — при анализе нескольких баз
+                ответ ждёт в очереди. 300 сек — безопасное значение.
+              </div>
+            </div>
           </div>
 
           {/* Context size */}

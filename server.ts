@@ -17,10 +17,30 @@ dotenv.config();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const BASES_DIR = path.resolve(process.cwd(), 'bases');
 const SETTINGS_FILE = path.resolve(process.cwd(), 'settings.json');
+const MODELS_DIR = path.resolve(process.cwd(), 'models');
 
 // Ensure bases directory exists
 if (!fs.existsSync(BASES_DIR)) {
   fs.mkdirSync(BASES_DIR, { recursive: true });
+}
+
+/**
+ * Сканирует папку models/ и возвращает имена локальных .gguf без расширения.
+ * Используется для первого запуска: если settings.json ещё нет, провайдером
+ * по умолчанию становится локальный llama-server с моделью из этой папки.
+ */
+function discoverLocalModels(): string[] {
+  try {
+    if (!fs.existsSync(MODELS_DIR)) return [];
+    return fs
+      .readdirSync(MODELS_DIR)
+      .filter((f) => f.toLowerCase().endsWith('.gguf'))
+      .map((f) => path.basename(f, path.extname(f)))
+      .sort();
+  } catch (err) {
+    console.error('Не удалось прочитать папку models/:', err);
+    return [];
+  }
 }
 
 interface Base {
@@ -42,6 +62,18 @@ interface Settings {
   openai_api_key?: string;
   model_name?: string;
   system_prompt?: string;
+  /**
+   * Таймаут одного запроса к модели в секундах. Локальному серверу нужно
+   * заметно больше: он обрабатывает запросы последовательно, и при параллельном
+   * анализе нескольких баз ответ может ждать в очереди десятки секунд.
+   */
+  request_timeout?: number;
+  /**
+   * Параллельный анализ всех баз перед ответом. Даёт более точный выбор
+   * источника, но добавляет отдельный вызов модели (секунды на локальной).
+   * Выключенный режим — быстрый выбор базы по совпадению слов, без запроса к LLM.
+   */
+  parallel_analysis?: boolean;
 }
 
 interface ChatMessage {
@@ -57,26 +89,173 @@ interface BaseAnalysis {
   chosen: boolean;
 }
 
-// Default settings
+// Первая найденная локальная модель — дефолт для самого первого запуска,
+// когда settings.json ещё не существует.
+const FIRST_LOCAL_MODEL = discoverLocalModels()[0] || 'local';
+
+// Default settings.
+// Провайдером по умолчанию идёт локальный llama-server: приложение создано
+// как локальный чат, а облачные провайдеры надо включать осознанно через UI.
+// Если ключ Gemini прописан в .env — уважаем его (обратная совместимость).
 const DEFAULT_SETTINGS: Settings = {
   context_size: 4096,
   threads: 8,
   max_tokens: 1024,
   temperature: 0.7,
   top_p: 0.9,
-  backend_provider: process.env.GEMINI_API_KEY ? 'gemini' : 'openai_compatible',
+  backend_provider: process.env.GEMINI_API_KEY ? 'gemini' : 'llama_cpp',
   llama_server_url: 'http://127.0.0.1:8080',
   openai_base_url: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
   openai_api_key: process.env.OPENAI_API_KEY || '',
-  model_name: 'gemini-3.5-flash',
+  model_name: FIRST_LOCAL_MODEL,
+  request_timeout: 300,
+  parallel_analysis: true,
 };
+
+/**
+ * Таймаут запроса к модели в миллисекундах.
+ * Локальный сервер обрабатывает запросы последовательно: пока генерируется
+ * предыдущий базовый ответ, остальные стоят в очереди. Поэтому у локального
+ * провайдера лимит заметно больше, чем у облачного.
+ */
+function resolveTimeoutMs(settings: Settings, provider: string): number {
+  const fallback = provider === 'llama_cpp' || provider === 'ollama' ? 300 : 120;
+  const seconds = settings.request_timeout ?? fallback;
+  const safe = Number.isFinite(seconds) ? Math.max(5, Math.min(3600, seconds)) : fallback;
+  return safe * 1000;
+}
+
+// =====================================================================
+// РАСПОЗНАВАНИЕ ОШИБОК
+// =====================================================================
+
+/** Признаки переполнения контекста в теле ошибки от любого провайдера. */
+const CONTEXT_OVERFLOW_MARKERS = [
+  'exceed_context_size_error',
+  'exceeds the available context size',
+  'exceeds context size',
+  'context size exceeded',
+  'maximum context length',
+  'context_length_exceeded',
+  'prompt is too long',
+  'reduce the length of the messages',
+  'контекст модели переполнен',
+];
+
+/** Помеченная ошибка переполнения контекста — надёжнее, чем разбор текста. */
+class ContextOverflowError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ContextOverflowError';
+  }
+}
+
+export type ChatErrorCode = 'context_overflow' | 'timeout' | 'connection' | 'generic';
+
+/** Понимает ли провайдер, что контекст переполнен. */
+function isContextOverflow(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  return CONTEXT_OVERFLOW_MARKERS.some((m) => t.includes(m));
+}
+
+/** Ошибка переполнения: наша помеченная либо распознанная по тексту ответа. */
+function isOverflowErr(err: any): boolean {
+  if (err?.name === 'ContextOverflowError') return true;
+  return isContextOverflow(err?.message || String(err || ''));
+}
+
+/** Достаёт «60030 токенов из 16384» из тела ошибки llama.cpp, если они есть. */
+function extractContextHint(text: string): string {
+  const prompt = (text || '').match(/(\d+)\s+tokens?\)\s*exceeds/);
+  const ctx = (text || '').match(/context size \((\d+)\s+tokens?\)/);
+  if (prompt && ctx) {
+    return `Запрос: ${prompt[1]} токенов, доступно: ${ctx[1]}.`;
+  }
+  const nPrompt = (text || '').match(/"n_prompt_tokens"\s*:\s*(\d+)/);
+  const nCtx = (text || '').match(/"n_ctx"\s*:\s*(\d+)/);
+  if (nPrompt && nCtx) {
+    return `Запрос: ${nPrompt[1]} токенов, доступно: ${nCtx[1]}.`;
+  }
+  return '';
+}
+
+export interface ClassifiedError {
+  code: ChatErrorCode;
+  /** Стоит ли предлагать пользователю начать новый чат */
+  suggestNewChat: boolean;
+  /** Текст для показа пользователю */
+  message: string;
+  status: number;
+}
+
+/**
+ * Разбирает ошибку генерации: понимает, переполнен ли контекст,
+ * и готовит понятный текст с рекомендацией начать новый чат.
+ */
+function classifyChatError(err: any, settings: Settings): ClassifiedError {
+  const raw = (err?.message || String(err || '')).trim();
+
+  if (isOverflowErr(err)) {
+    const hint = extractContextHint(raw);
+    return {
+      code: 'context_overflow',
+      suggestNewChat: true,
+      status: 400,
+      message:
+        'Контекст модели переполнен — диалог не помещается в окно. ' +
+        (hint ? hint + ' ' : '') +
+        'Начните новый чат: нажмите «Новый чат» — сессия и история будут очищены. ' +
+        'Если нужно продолжить в том же диалоге — увеличьте «Контекст» в настройках ' +
+        `или уменьшите «Max tokens» (сейчас контекст ${settings.context_size}, ответ до ${settings.max_tokens} токенов).`,
+    };
+  }
+
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+    return {
+      code: 'timeout',
+      suggestNewChat: true,
+      status: 504,
+      message:
+        'Модель не ответила вовремя. Чаще всего это перегруженный локальный сервер ' +
+        'или слишком длинная база. Попробуйте начать новый чат или увеличьте таймаут в настройках.',
+    };
+  }
+
+  if (raw.includes('ECONNREFUSED') || raw.includes('Не удалось подключиться')) {
+    return {
+      code: 'connection',
+      suggestNewChat: false,
+      status: 502,
+      message:
+        'Нет связи с моделью. Проверьте, что llama-server запущен, в разделе Настройки → Провайдер AI.',
+    };
+  }
+
+  return {
+    code: 'generic',
+    suggestNewChat: false,
+    status: 500,
+    message: raw || 'Внутренняя ошибка генерации ответа',
+  };
+}
 
 function loadSettings(): Settings {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      // Сохранённые настройки главнее дефолтов: так запоминается последняя
+      // настроенная модель и провайдер между перезапусками.
+      const merged = { ...DEFAULT_SETTINGS, ...parsed };
+      // Если провайдер локальный, а имя модели осталось облачным — подставляем
+      // найденную локальную, чтобы в UI не светился gemini/deepseek.
+      if (
+        (merged.backend_provider === 'llama_cpp' || merged.backend_provider === 'ollama') &&
+        (!parsed.model_name || /^(gemini|deepseek|gpt-|local-model)/i.test(parsed.model_name))
+      ) {
+        merged.model_name = FIRST_LOCAL_MODEL;
+      }
+      return merged;
     }
   } catch (err) {
     console.error('Error loading settings.json:', err);
@@ -93,6 +272,20 @@ function saveSettings(settings: Settings): void {
 }
 
 let appSettings = loadSettings();
+
+/** Проверяет, отвечает ли локальный llama-server / ollama. */
+async function localServerReachable(isOllama: boolean): Promise<boolean> {
+  const base = (appSettings.llama_server_url || 'http://127.0.0.1:8080').replace(/\/$/, '');
+  const url = isOllama ? `${base}/api/tags` : `${base}/health`;
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
 
 // In-memory conversation history
 const DEFAULT_SYSTEM_PROMPT =
@@ -373,12 +566,12 @@ async function runLLM(
 
     const model = settings.model_name || 'deepseek-chat';
 
-    try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        signal: AbortSignal.timeout(12000),
-        body: JSON.stringify({
+try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(resolveTimeoutMs(settings, 'gemini')),
+      body: JSON.stringify({
           model,
           messages: messages.map((m) => ({
             role: m.role,
@@ -414,11 +607,12 @@ async function runLLM(
     ? targetUrl
     : `${targetUrl}/v1/chat/completions`;
 
-  try {
+try {
+    const timeoutMs = resolveTimeoutMs(settings, provider);
     const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: settings.model_name || 'default',
         messages: messages.map((m) => ({
@@ -433,14 +627,26 @@ async function runLLM(
 
     if (!resp.ok) {
       const errText = await resp.text();
+      if (isContextOverflow(errText)) {
+        throw new ContextOverflowError(
+          `Контекст модели переполнен. ${extractContextHint(errText) || ''}`.trim()
+        );
+      }
       throw new Error(`LLM сервер вернул ошибку ${resp.status}: ${errText}`);
     }
 
     const data: any = await resp.json();
     return data.choices?.[0]?.message?.content || '';
   } catch (err: any) {
-    if (err.name === 'TimeoutError') {
-      throw new Error(`Таймаут подключения к локальному серверу (${targetUrl}).`);
+    const timeoutSec = Math.round(resolveTimeoutMs(settings, provider) / 1000);
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      // Сохраняем name, чтобы classifyChatError узнал таймаут, а не «generic».
+      const timeoutErr = new Error(
+        `Локальный сервер ${targetUrl} не ответил за ${timeoutSec} сек. ` +
+          `Увеличьте таймаут в настройках (сейчас ${timeoutSec} сек) или уменьшите Max tokens.`
+      );
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
     }
     if (err.message && err.message.includes('ECONNREFUSED')) {
       throw new Error(
@@ -482,6 +688,8 @@ async function runLLMWithRetry(
 interface MultiBaseAnalysisResult {
   chosenName: string;
   analyses: BaseAnalysis[];
+  /** Сколько занял вызов модели на анализ всех баз, мс */
+  analysisMs: number;
 }
 
 // Unified multi-base parallel analysis & classification
@@ -491,7 +699,7 @@ async function performMultiBaseAnalysis(
   settings: Settings
 ): Promise<MultiBaseAnalysisResult> {
   if (bases.length === 0) {
-    return { chosenName: '', analyses: [] };
+    return { chosenName: '', analyses: [], analysisMs: 0 };
   }
 
   const basesSummary = bases
@@ -529,6 +737,7 @@ async function performMultiBaseAnalysis(
 
   const user = `Базы знаний:\n${basesSummary}\n\nВопрос пользователя: ${question}`;
 
+  const analysisStart = Date.now();
   try {
     const raw = await runLLMWithRetry(
       [
@@ -540,6 +749,7 @@ async function performMultiBaseAnalysis(
       1000,
       3
     );
+    const analysisMs = Date.now() - analysisStart;
 
     let cleaned = raw.trim();
     if (cleaned.startsWith('```')) {
@@ -582,17 +792,16 @@ async function performMultiBaseAnalysis(
       }
     }
 
-    return { chosenName, analyses };
+    return { chosenName, analyses, analysisMs };
   } catch (err: any) {
+    // Переполнение контекста при анализе: следующий вызов тоже не пройдёт,
+    // поэтому показываем пользователю понятную ошибку, а не маскируем fallback'ом.
+    if (isOverflowErr(err)) {
+      throw err;
+    }
     console.warn('Batch analysis fallback:', err);
-    // Simple heuristic fallback if error
-    const lowerQ = question.toLowerCase();
-    const matched = bases.find((b) =>
-      lowerQ.includes(b.name.toLowerCase()) ||
-      (b.description && lowerQ.split(/\s+/).some((w) => w.length > 3 && b.description.toLowerCase().includes(w)))
-    );
-
-    const chosenName = matched ? matched.name : '';
+    // Простой эвристический выбор, если модель не ответила
+    const chosenName = heuristicSelectBase(question, bases);
     const analyses: BaseAnalysis[] = bases.map((b) => ({
       name: b.name,
       description: b.description,
@@ -600,8 +809,22 @@ async function performMultiBaseAnalysis(
       chosen: b.name === chosenName,
     }));
 
-    return { chosenName, analyses };
+    return { chosenName, analyses, analysisMs: Date.now() - analysisStart };
   }
+}
+
+/**
+ * Выбор базы без обращения к модели — по вхождению имени базы в вопрос
+ * или совпадению слов с её описанием. Используется как fallback и как
+ * быстрый режим при отключённом параллельном анализе.
+ */
+function heuristicSelectBase(question: string, bases: Base[]): string {
+  const lowerQ = question.toLowerCase();
+  const matched = bases.find((b) =>
+    lowerQ.includes(b.name.toLowerCase()) ||
+    (b.description && lowerQ.split(/\s+/).some((w) => w.length > 3 && b.description.toLowerCase().includes(w)))
+  );
+  return matched ? matched.name : '';
 }
 
 function buildOtherHints(chosenName: string, analyses: BaseAnalysis[]): string {
@@ -638,9 +861,9 @@ async function startServer() {
   });
 
   // API Routes
-  app.get('/api/state', (req: Request, res: Response) => {
+  app.get('/api/state', async (req: Request, res: Response) => {
     const bases = baseManager.all();
-    const provider = appSettings.backend_provider || 'gemini';
+    const provider = appSettings.backend_provider || DEFAULT_SETTINGS.backend_provider!;
     let serverUrl = 'Gemini (Cloud API)';
     if (provider === 'openai_compatible') {
       serverUrl = `OpenAI: ${appSettings.openai_base_url || 'https://api.openai.com/v1'} (${appSettings.model_name || 'deepseek-chat'})`;
@@ -648,11 +871,14 @@ async function startServer() {
       serverUrl = `Local: ${appSettings.llama_server_url || 'http://127.0.0.1:8080'} (${appSettings.model_name || 'local'})`;
     }
 
+    // Облаку нужен ключ, локальному серверу — только живой процесс.
+    const isLocal = provider === 'llama_cpp' || provider === 'ollama';
     const hasKey = Boolean(
       process.env.OPENAI_API_KEY ||
       appSettings.openai_api_key ||
       provider === 'gemini'
     );
+    const isHealthy = isLocal ? await localServerReachable(provider === 'ollama') : hasKey;
 
     res.json({
       config: {
@@ -661,7 +887,7 @@ async function startServer() {
         max_tokens: appSettings.max_tokens,
         temperature: appSettings.temperature,
         top_p: appSettings.top_p,
-        backend_provider: appSettings.backend_provider || 'gemini',
+        backend_provider: provider,
         llama_server_url: appSettings.llama_server_url || 'http://127.0.0.1:8080',
         openai_base_url: appSettings.openai_base_url || 'https://api.openai.com/v1',
         openai_api_key: appSettings.openai_api_key
@@ -669,11 +895,14 @@ async function startServer() {
           : process.env.OPENAI_API_KEY
           ? '•••••••• (из .env)'
           : '',
-        model_name: appSettings.model_name || 'gemini-3.5-flash',
+        model_name: appSettings.model_name || DEFAULT_SETTINGS.model_name,
+        request_timeout: Math.round(resolveTimeoutMs(appSettings, provider) / 1000),
+        parallel_analysis: appSettings.parallel_analysis !== false,
       },
       server_url: serverUrl,
-      is_healthy: hasKey,
+      is_healthy: isHealthy,
       openai_key_configured: Boolean(process.env.OPENAI_API_KEY || appSettings.openai_api_key),
+      local_models: discoverLocalModels(),
       bases_count: bases.length,
       msg_count: chatHistory.length,
       bases: bases.map((b) => ({
@@ -682,6 +911,16 @@ async function startServer() {
         path: b.filePath,
       })),
       issues: baseManager.issues(),
+    });
+  });
+
+  // Локальные .gguf из папки models/ — для выбора модели в UI
+  app.get('/api/models', (req: Request, res: Response) => {
+    const models = discoverLocalModels();
+    res.json({
+      models,
+      models_dir: MODELS_DIR,
+      current: appSettings.model_name,
     });
   });
 
@@ -792,16 +1031,25 @@ async function startServer() {
     }
 
     try {
+      const requestStart = Date.now();
       chatHistory.push({ role: 'user', content: msg });
       const currentBases = baseManager.all();
 
       // Step 1 & 2: Multi-base parallel analysis & classification
       let analyses: BaseAnalysis[] = [];
       let chosenName = '';
-      if (currentBases.length > 0) {
+      let analysisMs = 0;
+      const parallelEnabled = appSettings.parallel_analysis !== false;
+
+      if (currentBases.length > 0 && !parallelEnabled) {
+        // Быстрый режим: база выбирается по словам, без вызова модели.
+        // analyses остаётся пустым — панель параллельного анализа не нужна.
+        chosenName = heuristicSelectBase(msg, currentBases);
+      } else if (currentBases.length > 0) {
         const analysisResult = await performMultiBaseAnalysis(msg, currentBases, appSettings);
         analyses = analysisResult.analyses;
         chosenName = analysisResult.chosenName;
+        analysisMs = analysisResult.analysisMs;
       }
 
       // Step 3: Synthesis with chosen base context
@@ -847,13 +1095,30 @@ async function startServer() {
       // Add latest user query
       msgsToSend.push(historyCopy[historyCopy.length - 1]);
 
+      const answerStart = Date.now();
       const response = await runLLMWithRetry(msgsToSend, appSettings, undefined, undefined, 3);
+      const answerMs = Date.now() - answerStart;
+      const totalMs = Date.now() - requestStart;
       chatHistory.push({ role: 'assistant', content: response });
+
+      const timings = {
+        analysis_mode: parallelEnabled ? ('parallel' as const) : ('heuristic' as const),
+        analysis_ms: analysisMs,
+        answer_ms: answerMs,
+        total_ms: totalMs,
+        bases_count: currentBases.length,
+        response_chars: response.length,
+      };
+      console.log(
+        `[chat] total=${totalMs}ms (${parallelEnabled ? `анализ ${analysisMs}ms по ${currentBases.length} базам` : 'анализ отключён'} + ответ ${answerMs}ms), ` +
+          `источник=${chosenName || '—'}, ${response.length} симв.`
+      );
 
       res.json({
         response,
         source: chosenName,
         analyses,
+        timings,
       });
     } catch (err: any) {
       console.error('Chat error:', err);
@@ -861,7 +1126,15 @@ async function startServer() {
       if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].content === msg) {
         chatHistory.pop();
       }
-      res.status(500).json({ error: err?.message || 'Внутренняя ошибка генерации ответа' });
+      const classified = classifyChatError(err, appSettings);
+      if (classified.suggestNewChat) {
+        console.warn(`[chat] ${classified.code}: рекомендуем новый чат`);
+      }
+      res.status(classified.status).json({
+        error: classified.message,
+        code: classified.code,
+        suggest_new_chat: classified.suggestNewChat,
+      });
     }
   });
 

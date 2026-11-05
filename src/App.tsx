@@ -22,9 +22,9 @@ export default function App() {
     max_tokens: 1024,
     temperature: 0.7,
     top_p: 0.9,
-    backend_provider: 'gemini',
+    backend_provider: 'llama_cpp',
     llama_server_url: 'http://127.0.0.1:8080',
-    model_name: 'gemini-3.5-flash',
+    model_name: 'local',
   });
   const [bases, setBases] = useState<Base[]>([]);
   const [selectedBase, setSelectedBase] = useState<Base | null>(null);
@@ -157,7 +157,11 @@ export default function App() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Ошибка сервера: ${res.status}`);
+        const error = new Error(errData.error || `Ошибка сервера: ${res.status}`);
+        // Прокидываем код и рекомендацию, чтобы показать кнопку «Новый чат»
+        (error as any).data = errData;
+        (error as any).suggestNewChat = Boolean(errData.suggest_new_chat);
+        throw error;
       }
 
       const data = await res.json();
@@ -167,13 +171,32 @@ export default function App() {
         content: data.response,
         source: data.source,
         analyses: data.analyses,
+        timings: data.timings,
         timestamp: Date.now(),
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
       refreshState();
     } catch (err: any) {
-      addToast(err?.message || 'Не удалось отправить сообщение', 'err');
+      const errData = err?.data || {};
+      const suggestNewChat = Boolean(err?.suggestNewChat);
+      // Ошибка контекста/таймаута — не молчаливый тост, а сообщение в чате
+      // с кнопкой очистки сессии.
+      if (suggestNewChat || errData.code) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            role: 'assistant',
+            content: err?.message || 'Ошибка генерации ответа',
+            isError: true,
+            action: suggestNewChat ? 'new_chat' : undefined,
+            timestamp: Date.now(),
+          },
+        ]);
+      } else {
+        addToast(err?.message || 'Не удалось отправить сообщение', 'err');
+      }
     } finally {
       setIsLoading(false);
     }
