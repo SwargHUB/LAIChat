@@ -1,6 +1,7 @@
 import React from 'react';
 import { ServerState } from '../types';
 import { Sparkles, Terminal, BookOpen, Sliders, ExternalLink, ArrowDown, MessageSquare } from 'lucide-react';
+import robotWolfLogo from '../assets/images/robot_wolf_logo_1793872150250.jpg';
 
 interface HeaderHeroProps {
   serverState: ServerState | null;
@@ -25,9 +26,12 @@ export const HeaderHero: React.FC<HeaderHeroProps> = ({
       {/* Top Navigation */}
       <header className="sticky top-0 z-40 flex items-center justify-between px-6 py-3.5 bg-[#0a0a0f]/80 backdrop-blur-xl border-b border-[var(--border)]">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-[var(--prism)] grid place-items-center text-[#0a0a0f] font-mono font-bold text-sm shadow-[var(--glow-pink)]">
-            L
-          </div>
+          <img
+            src={robotWolfLogo}
+            alt="LAIChat — Волчонок-робот"
+            referrerPolicy="no-referrer"
+            className="w-10 h-10 rounded-xl object-cover border border-[var(--cyan)]/40 shadow-[var(--glow-pink)]"
+          />
           <div>
             <span className="font-bold text-base tracking-tight text-white flex items-center gap-2">
               LAIChat
@@ -77,7 +81,16 @@ export const HeaderHero: React.FC<HeaderHeroProps> = ({
           )}
         </nav>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          <a
+            href="/api/installer/windows"
+            download="LAIChat-Windows-Setup.bat"
+            className="btn btn-sm !px-3 !py-1.5 text-xs text-[var(--cyan)] border-[var(--cyan)]/30 hover:bg-[var(--cyan)]/15 flex items-center gap-1.5"
+            title="Скачать графический установщик LAIChat для Windows (выбор папки, скачивание модели или выбор облачной)"
+          >
+            <ArrowDown className="w-3.5 h-3.5" />
+            <span>Установщик Windows</span>
+          </a>
           <a
             href="https://github.com/SwargHUB/LAIChat"
             target="_blank"
@@ -103,9 +116,9 @@ export const HeaderHero: React.FC<HeaderHeroProps> = ({
           </div>
 
           <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight leading-[1.15] text-white">
-            Локальный AI-чат с{' '}
+            Локальный{' '}
             <span className="bg-gradient-to-r from-[var(--cyan)] via-[var(--violet)] to-[var(--accent)] bg-clip-text text-transparent">
-              параллельным анализом баз
+              AI-чат
             </span>
           </h1>
 

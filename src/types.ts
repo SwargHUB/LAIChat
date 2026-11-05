@@ -26,6 +26,8 @@ export interface Settings {
   request_timeout?: number;
   /** Параллельный анализ всех баз перед ответом */
   parallel_analysis?: boolean;
+  /** Доступность веб-интерфейса из локальной сети (LAN) */
+  lan_access?: boolean;
 }
 
 export interface BaseAnalysis {
@@ -75,6 +77,10 @@ export interface ServerState {
   openai_key_configured?: boolean;
   /** .gguf, найденные в папке models/ */
   local_models?: string[];
+  /** Локальные IPv4-адреса в LAN */
+  lan_ips?: string[];
+  /** Порт веб-сервера */
+  port?: number;
 }
 
 export interface ToastMessage {
@@ -82,3 +88,48 @@ export interface ToastMessage {
   text: string;
   type: 'ok' | 'err' | 'info';
 }
+
+export interface HardwareSpecs {
+  cpu_model: string;
+  cpu_cores: number;
+  arch: string;
+  platform: string;
+  total_ram_gb: number;
+  free_ram_gb: number;
+  gpu_info: string;
+  vram_gb?: number;
+  disk_free_gb: number;
+  models_dir: string;
+  recommended_tier: 'low' | 'medium' | 'high' | 'ultra';
+  tier_description: string;
+}
+
+export interface HuggingFaceModel {
+  id: string;
+  name: string;
+  repo: string;
+  filename: string;
+  download_url: string;
+  size_gb: number;
+  min_ram_gb: number;
+  params: string;
+  quantization: string;
+  context_length: number;
+  description: string;
+  tags: string[];
+  recommended_for?: ('low' | 'medium' | 'high' | 'ultra')[];
+  is_downloaded?: boolean;
+  fit_status?: 'optimal' | 'good' | 'heavy';
+}
+
+export interface ModelDownloadTask {
+  filename: string;
+  repo: string;
+  status: 'downloading' | 'completed' | 'error' | 'cancelled';
+  downloaded_bytes: number;
+  total_bytes: number;
+  progress: number;
+  speed_mbps: number;
+  error?: string;
+}
+

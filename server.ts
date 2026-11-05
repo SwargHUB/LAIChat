@@ -2,6 +2,8 @@ import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+import { execSync } from 'child_process';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { BM25Index, tokenize, DocumentChunk } from './searchEngine';
@@ -19,9 +21,12 @@ const BASES_DIR = path.resolve(process.cwd(), 'bases');
 const SETTINGS_FILE = path.resolve(process.cwd(), 'settings.json');
 const MODELS_DIR = path.resolve(process.cwd(), 'models');
 
-// Ensure bases directory exists
+// Ensure bases and models directories exist
 if (!fs.existsSync(BASES_DIR)) {
   fs.mkdirSync(BASES_DIR, { recursive: true });
+}
+if (!fs.existsSync(MODELS_DIR)) {
+  fs.mkdirSync(MODELS_DIR, { recursive: true });
 }
 
 /**
@@ -42,6 +47,291 @@ function discoverLocalModels(): string[] {
     return [];
   }
 }
+
+/**
+ * Определяет IPv4-адреса текущей машины в локальной сети (LAN),
+ * чтобы пользователь мог открыть чат с других устройств (смартфона, ноутбука).
+ */
+function getLocalNetworkIPs(): string[] {
+  const ips: string[] = [];
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          ips.push(iface.address);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Ошибка получения сетевых интерфейсов:', err);
+  }
+  return ips;
+}
+
+// =====================================================================
+// ДИАГНОСТИКА ЖЕЛЕЗА И МЕНЕДЖЕР МОДЕЛЕЙ HUGGING FACE (GGUF)
+// =====================================================================
+
+interface HardwareSpecs {
+  cpu_model: string;
+  cpu_cores: number;
+  arch: string;
+  platform: string;
+  total_ram_gb: number;
+  free_ram_gb: number;
+  gpu_info: string;
+  vram_gb?: number;
+  disk_free_gb: number;
+  models_dir: string;
+  recommended_tier: 'low' | 'medium' | 'high' | 'ultra';
+  tier_description: string;
+}
+
+function getHardwareSpecs(): HardwareSpecs {
+  const cpus = os.cpus();
+  const cpuModel = (cpus[0]?.model || 'CPU Processor').replace(/\s+/g, ' ').trim();
+  const cpuCores = cpus.length || 4;
+  const totalRamGb = Math.round((os.totalmem() / 1024 ** 3) * 10) / 10;
+  const freeRamGb = Math.round((os.freemem() / 1024 ** 3) * 10) / 10;
+
+  let diskFreeGb = 50;
+  try {
+    if (typeof fs.statfsSync === 'function') {
+      const stat = fs.statfsSync(MODELS_DIR);
+      diskFreeGb = Math.round(((Number(stat.bavail) * Number(stat.bsize)) / 1024 ** 3) * 10) / 10;
+    }
+  } catch {
+    // fallback if statfsSync is unavailable
+  }
+
+  let gpuInfo = 'CPU Inference (AVX2 / ARM NEON)';
+  let vramGb: number | undefined;
+  try {
+    const smi = execSync(
+      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits',
+      { timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+      .toString()
+      .trim();
+    if (smi) {
+      const firstLine = smi.split('\n')[0];
+      const [gpuName, memMb] = firstLine.split(',').map((s) => s.trim());
+      if (gpuName) {
+        const vram = memMb ? Math.round(( parseFloat(memMb) / 1024 ) * 10) / 10 : undefined;
+        vramGb = vram;
+        gpuInfo = vram ? `${gpuName} (${vram} ГБ VRAM)` : gpuName;
+      }
+    }
+  } catch {
+    if (process.platform === 'darwin' && process.arch === 'arm64') {
+      gpuInfo = `Apple Silicon Unified Memory (${totalRamGb} ГБ)`;
+      vramGb = totalRamGb;
+    }
+  }
+
+  const effectiveMem = vramGb ? Math.max(totalRamGb, vramGb * 1.5) : totalRamGb;
+  let recommendedTier: 'low' | 'medium' | 'high' | 'ultra' = 'medium';
+  let tierDescription = '';
+
+  if (effectiveMem < 7.5) {
+    recommendedTier = 'low';
+    tierDescription = 'Компактные модели 0.5B – 3B (Q4_K_M). Быстрый отклик при малом объёме ОЗУ.';
+  } else if (effectiveMem <= 15) {
+    recommendedTier = 'medium';
+    tierDescription = 'Оптимальны модели 3B – 8B (Q4_K_M / Q5_K_M). Отличный баланс скорости и качества для RAG.';
+  } else if (effectiveMem <= 28) {
+    recommendedTier = 'high';
+    tierDescription = 'Доступны мощные модели 7B – 14B (Q4_K_M / Q5_K_M) с глубоким анализом контекста.';
+  } else {
+    recommendedTier = 'ultra';
+    tierDescription = 'Высокопроизводительная система: доступны модели 14B – 32B+ и длинный контекст до 128K–250K.';
+  }
+
+  return {
+    cpu_model: cpuModel,
+    cpu_cores: cpuCores,
+    arch: os.arch(),
+    platform: os.platform(),
+    total_ram_gb: totalRamGb,
+    free_ram_gb: freeRamGb,
+    gpu_info: gpuInfo,
+    vram_gb: vramGb,
+    disk_free_gb: diskFreeGb,
+    models_dir: MODELS_DIR,
+    recommended_tier: recommendedTier,
+    tier_description: tierDescription,
+  };
+}
+
+interface CatalogModel {
+  id: string;
+  name: string;
+  repo: string;
+  filename: string;
+  download_url: string;
+  size_gb: number;
+  min_ram_gb: number;
+  params: string;
+  quantization: string;
+  context_length: number;
+  description: string;
+  tags: string[];
+  recommended_for: ('low' | 'medium' | 'high' | 'ultra')[];
+}
+
+const CURATED_HF_MODELS: CatalogModel[] = [
+  {
+    id: 'qwen2.5-1.5b-instruct-q4',
+    name: 'Qwen 2.5 1.5B Instruct',
+    repo: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF',
+    filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    download_url:
+      'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    size_gb: 1.1,
+    min_ram_gb: 3,
+    params: '1.5B',
+    quantization: 'Q4_K_M',
+    context_length: 32768,
+    description:
+      'Сверхбыстрая компактная модель с отличным русским языком. Мгновенно работает даже на слабых ПК и ноутбуках без видеокарты.',
+    tags: ['Русский язык', 'Быстрая', 'Для слабых ПК', '32K контекст'],
+    recommended_for: ['low', 'medium'],
+  },
+  {
+    id: 'llama-3.2-3b-instruct-q4',
+    name: 'Llama 3.2 3B Instruct',
+    repo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
+    filename: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+    size_gb: 2.0,
+    min_ram_gb: 4,
+    params: '3B',
+    quantization: 'Q4_K_M',
+    context_length: 131072,
+    description:
+      'Оптимальная модель от Meta с поддержкой контекста до 128K токенов. Отлично подходит для быстрой работы с большими базами знаний.',
+    tags: ['128K контекст', 'RAG', 'Сбалансированная'],
+    recommended_for: ['low', 'medium', 'high'],
+  },
+  {
+    id: 'qwen2.5-3b-instruct-q4',
+    name: 'Qwen 2.5 3B Instruct',
+    repo: 'Qwen/Qwen2.5-3B-Instruct-GGUF',
+    filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
+    download_url:
+      'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
+    size_gb: 2.1,
+    min_ram_gb: 4.5,
+    params: '3B',
+    quantization: 'Q4_K_M',
+    context_length: 32768,
+    description:
+      'Умная 3B-модель с глубоким пониманием русского языка, таблиц и технических инструкций. Идеальна для ноутбуков с 8 ГБ ОЗУ.',
+    tags: ['Русский язык', 'RAG', 'Точные ответы'],
+    recommended_for: ['low', 'medium', 'high'],
+  },
+  {
+    id: 'qwen2.5-7b-instruct-q4',
+    name: 'Qwen 2.5 7B Instruct',
+    repo: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
+    filename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    size_gb: 4.7,
+    min_ram_gb: 8,
+    params: '7B',
+    quantization: 'Q4_K_M',
+    context_length: 131072,
+    description:
+      'Золотой стандарт для локального чата и баз знаний! Превосходное качество русского языка, классификации и контекст до 128K.',
+    tags: ['Хит для RAG', 'Русский язык', '128K контекст'],
+    recommended_for: ['medium', 'high', 'ultra'],
+  },
+  {
+    id: 'qwen2.5-coder-7b-instruct-q4',
+    name: 'Qwen 2.5 Coder 7B Instruct',
+    repo: 'Qwen/Qwen2.5-Coder-7B-Instruct-GGUF',
+    filename: 'qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+    download_url:
+      'https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+    size_gb: 4.7,
+    min_ram_gb: 8,
+    params: '7B',
+    quantization: 'Q4_K_M',
+    context_length: 131072,
+    description:
+      'Специализированная модель для программирования, анализа кода (Go, Python, TS) и технической документации.',
+    tags: ['Код и Go/TS', '128K контекст', 'Техдокументация'],
+    recommended_for: ['medium', 'high', 'ultra'],
+  },
+  {
+    id: 'llama-3.1-8b-instruct-q4',
+    name: 'Llama 3.1 8B Instruct',
+    repo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
+    filename: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    size_gb: 4.9,
+    min_ram_gb: 8,
+    params: '8B',
+    quantization: 'Q4_K_M',
+    context_length: 131072,
+    description:
+      'Популярная универсальная модель 8B с большим контекстным окном 128K и надёжным следованием системным инструкциям.',
+    tags: ['Универсальная', '128K контекст', '8B'],
+    recommended_for: ['medium', 'high', 'ultra'],
+  },
+  {
+    id: 'gemma-2-9b-it-q4',
+    name: 'Google Gemma 2 9B Instruct',
+    repo: 'bartowski/gemma-2-9b-it-GGUF',
+    filename: 'gemma-2-9b-it-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf',
+    size_gb: 5.8,
+    min_ram_gb: 10,
+    params: '9B',
+    quantization: 'Q4_K_M',
+    context_length: 8192,
+    description:
+      'Модель от Google с высокой точностью логических рассуждений, суммаризации текста и аккуратной работой с фактами.',
+    tags: ['Логика и стиль', 'Google Gemma 2', '9B'],
+    recommended_for: ['high', 'ultra'],
+  },
+  {
+    id: 'qwen2.5-14b-instruct-q4',
+    name: 'Qwen 2.5 14B Instruct',
+    repo: 'bartowski/Qwen2.5-14B-Instruct-GGUF',
+    filename: 'Qwen2.5-14B-Instruct-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf',
+    size_gb: 9.0,
+    min_ram_gb: 16,
+    params: '14B',
+    quantization: 'Q4_K_M',
+    context_length: 131072,
+    description:
+      'Мощная 14-миллиардная модель для систем от 16 ГБ ОЗУ. Показывает уровень, близкий к облачным LLM, на сложных аналитических запросах.',
+    tags: ['Высокая точность', '128K контекст', 'Для 16+ ГБ ОЗУ'],
+    recommended_for: ['high', 'ultra'],
+  },
+];
+
+interface DownloadTaskState {
+  filename: string;
+  repo: string;
+  status: 'downloading' | 'completed' | 'error' | 'cancelled';
+  downloaded_bytes: number;
+  total_bytes: number;
+  progress: number;
+  speed_mbps: number;
+  error?: string;
+  abortController?: AbortController;
+}
+
+const activeDownloads = new Map<string, DownloadTaskState>();
 
 interface Base {
   name: string;
@@ -74,6 +364,8 @@ interface Settings {
    * Выключенный режим — быстрый выбор базы по совпадению слов, без запроса к LLM.
    */
   parallel_analysis?: boolean;
+  /** Доступность веб-интерфейса из локальной сети (LAN) */
+  lan_access?: boolean;
 }
 
 interface ChatMessage {
@@ -110,6 +402,7 @@ const DEFAULT_SETTINGS: Settings = {
   model_name: FIRST_LOCAL_MODEL,
   request_timeout: 300,
   parallel_analysis: true,
+  lan_access: true,
 };
 
 /**
@@ -857,6 +1150,22 @@ async function startServer() {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
+
+    // Если доступ из локальной сети (LAN) отключён пользователем,
+    // блокируем прямые подключения с других устройств локальной сети (не loopback и не облачный прокси).
+    if (appSettings.lan_access === false) {
+      const forwarded = req.headers['x-forwarded-for'];
+      const remoteAddr = req.socket.remoteAddress || '';
+      const isLoopback =
+        remoteAddr === '127.0.0.1' ||
+        remoteAddr === '::1' ||
+        remoteAddr === '::ffff:127.0.0.1';
+      if (!isLoopback && !forwarded) {
+        res.status(403).send('Доступ из локальной сети отключён в настройках LAIChat.');
+        return;
+      }
+    }
+
     next();
   });
 
@@ -898,11 +1207,14 @@ async function startServer() {
         model_name: appSettings.model_name || DEFAULT_SETTINGS.model_name,
         request_timeout: Math.round(resolveTimeoutMs(appSettings, provider) / 1000),
         parallel_analysis: appSettings.parallel_analysis !== false,
+        lan_access: appSettings.lan_access !== false,
       },
       server_url: serverUrl,
       is_healthy: isHealthy,
       openai_key_configured: Boolean(process.env.OPENAI_API_KEY || appSettings.openai_api_key),
       local_models: discoverLocalModels(),
+      lan_ips: getLocalNetworkIPs(),
+      port: PORT,
       bases_count: bases.length,
       msg_count: chatHistory.length,
       bases: bases.map((b) => ({
@@ -924,6 +1236,292 @@ async function startServer() {
     });
   });
 
+  // Характеристики железа ПК и список рекомендованных моделей с Hugging Face
+  app.get('/api/hardware', (req: Request, res: Response) => {
+    const specs = getHardwareSpecs();
+    const downloadedFiles = new Set(
+      discoverLocalModels().map((m) => `${m.toLowerCase()}.gguf`)
+    );
+
+    const models = CURATED_HF_MODELS.map((m) => {
+      const isDownloaded = downloadedFiles.has(m.filename.toLowerCase());
+      let fitStatus: 'optimal' | 'good' | 'heavy' = 'good';
+      if (m.recommended_for.includes(specs.recommended_tier)) {
+        fitStatus = 'optimal';
+      } else if (m.min_ram_gb > specs.total_ram_gb) {
+        fitStatus = 'heavy';
+      }
+      return {
+        ...m,
+        is_downloaded: isDownloaded,
+        fit_status: fitStatus,
+      };
+    });
+
+    res.json({
+      hardware: specs,
+      recommended_models: models,
+    });
+  });
+
+  // Живой поиск GGUF-моделей на Hugging Face Hub API
+  app.get('/api/hf-search', async (req: Request, res: Response) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      res.json({ results: [] });
+      return;
+    }
+
+    try {
+      const searchUrl = `https://huggingface.co/api/models?search=${encodeURIComponent(
+        q + ' GGUF'
+      )}&filter=gguf&sort=downloads&direction=-1&limit=8`;
+      const resp = await fetch(searchUrl, {
+        headers: { 'User-Agent': 'LAIChat-Model-Manager/1.0' },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Hugging Face API вернул статус ${resp.status}`);
+      }
+
+      const repos: any[] = await resp.json();
+      const specs = getHardwareSpecs();
+      const downloadedFiles = new Set(
+        discoverLocalModels().map((m) => `${m.toLowerCase()}.gguf`)
+      );
+
+      // Для каждого найденного репозитория получаем список .gguf файлов
+      const results: any[] = [];
+      for (const r of repos.slice(0, 6)) {
+        try {
+          const detailResp = await fetch(`https://huggingface.co/api/models/${r.id}`, {
+            headers: { 'User-Agent': 'LAIChat-Model-Manager/1.0' },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!detailResp.ok) continue;
+          const detail: any = await detailResp.json();
+          const siblings: any[] = Array.isArray(detail.siblings) ? detail.siblings : [];
+          const ggufFiles = siblings.filter(
+            (s) => typeof s.rfilename === 'string' && s.rfilename.toLowerCase().endsWith('.gguf')
+          );
+          if (ggufFiles.length === 0) continue;
+
+          // Предпочитаем Q4_K_M или Q4_0 или первый доступный .gguf
+          const preferred =
+            ggufFiles.find((f) => /q4_k_m/i.test(f.rfilename)) ||
+            ggufFiles.find((f) => /q4/i.test(f.rfilename)) ||
+            ggufFiles.find((f) => /q5_k_m/i.test(f.rfilename)) ||
+            ggufFiles[0];
+
+          const filename = path.basename(preferred.rfilename);
+          const quantMatch = filename.match(/(Q[0-9]_[A-Z0-9_]+|F16|BF16|IQ[0-9]_[A-Z0-9_]+)/i);
+          const quantization = quantMatch ? quantMatch[1].toUpperCase() : 'GGUF';
+
+          const sizeBytes = preferred.size || 0;
+          const sizeGb = sizeBytes
+            ? Math.round((sizeBytes / 1024 ** 3) * 10) / 10
+            : 3.5;
+          const minRamGb = Math.max(2, Math.round(sizeGb * 1.4 * 10) / 10);
+
+          let fitStatus: 'optimal' | 'good' | 'heavy' = 'good';
+          if (minRamGb <= specs.total_ram_gb * 0.75) {
+            fitStatus = 'optimal';
+          } else if (minRamGb > specs.total_ram_gb) {
+            fitStatus = 'heavy';
+          }
+
+          results.push({
+            id: `${r.id}/${filename}`,
+            name: r.id.split('/')[1] || r.id,
+            repo: r.id,
+            filename,
+            download_url: `https://huggingface.co/${r.id}/resolve/main/${preferred.rfilename}`,
+            size_gb: sizeGb,
+            min_ram_gb: minRamGb,
+            params: 'GGUF',
+            quantization,
+            context_length: 32768,
+            description: `Репозиторий Hugging Face: ${r.id} (скачиваний: ${(
+              r.downloads || 0
+            ).toLocaleString('ru-RU')}, лайков: ${r.likes || 0})`,
+            tags: ['HuggingFace Hub', quantization],
+            is_downloaded: downloadedFiles.has(filename.toLowerCase()),
+            fit_status: fitStatus,
+          });
+        } catch {
+          // ignore individual repo fetch error
+        }
+      }
+
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Ошибка поиска на Hugging Face' });
+    }
+  });
+
+  // Список активных и завершённых загрузок моделей
+  app.get('/api/models/downloads', (req: Request, res: Response) => {
+    const list = Array.from(activeDownloads.values()).map((d) => ({
+      filename: d.filename,
+      repo: d.repo,
+      status: d.status,
+      downloaded_bytes: d.downloaded_bytes,
+      total_bytes: d.total_bytes,
+      progress: d.progress,
+      speed_mbps: d.speed_mbps,
+      error: d.error,
+    }));
+    res.json({
+      downloads: list,
+      local_models: discoverLocalModels(),
+    });
+  });
+
+  // Запуск скачивания выбранной GGUF-модели с Hugging Face в папку models/
+  app.post('/api/models/download', async (req: Request, res: Response) => {
+    const { download_url, filename, repo } = req.body || {};
+    if (!download_url || !filename) {
+      res.status(400).json({ error: 'Не указан URL или имя файла модели' });
+      return;
+    }
+
+    const safeFilename = path.basename(String(filename)).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const finalFilename = safeFilename.toLowerCase().endsWith('.gguf')
+      ? safeFilename
+      : `${safeFilename}.gguf`;
+
+    const existingTask = activeDownloads.get(finalFilename);
+    if (existingTask && existingTask.status === 'downloading') {
+      res.json({ ok: true, message: 'Модель уже скачивается', filename: finalFilename });
+      return;
+    }
+
+    const destPath = path.join(MODELS_DIR, finalFilename);
+    const tempPath = `${destPath}.part`;
+    const abortController = new AbortController();
+
+    const taskState: DownloadTaskState = {
+      filename: finalFilename,
+      repo: repo || 'HuggingFace',
+      status: 'downloading',
+      downloaded_bytes: 0,
+      total_bytes: 0,
+      progress: 0,
+      speed_mbps: 0,
+      abortController,
+    };
+    activeDownloads.set(finalFilename, taskState);
+
+    // Запускаем потоковое скачивание в фоне
+    (async () => {
+      const startTime = Date.now();
+      try {
+        const response = await fetch(String(download_url), {
+          headers: { 'User-Agent': 'LAIChat-Model-Downloader/1.0' },
+          signal: abortController.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          throw new Error(`Сервер Hugging Face вернул статус ${response.status}`);
+        }
+
+        const totalBytes = parseInt(response.headers.get('content-length') || '0', 10);
+        taskState.total_bytes = totalBytes;
+
+        const fileStream = fs.createWriteStream(tempPath);
+        const reader = response.body.getReader();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            fileStream.write(Buffer.from(value));
+            taskState.downloaded_bytes += value.byteLength;
+            const elapsedSec = Math.max(0.5, (Date.now() - startTime) / 1000);
+            taskState.speed_mbps =
+              Math.round((taskState.downloaded_bytes / (1024 * 1024) / elapsedSec) * 10) / 10;
+            if (taskState.total_bytes > 0) {
+              taskState.progress = Math.min(
+                99,
+                Math.round((taskState.downloaded_bytes / taskState.total_bytes) * 100)
+              );
+            }
+          }
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          fileStream.end(() => resolve());
+          fileStream.on('error', reject);
+        });
+
+        fs.renameSync(tempPath, destPath);
+        taskState.status = 'completed';
+        taskState.progress = 100;
+      } catch (err: any) {
+        try {
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        } catch {
+          // ignore cleanup error
+        }
+        if (err?.name === 'AbortError') {
+          taskState.status = 'cancelled';
+          taskState.error = 'Загрузка отменена пользователем';
+        } else {
+          taskState.status = 'error';
+          taskState.error = err?.message || 'Ошибка при скачивании файла';
+        }
+      }
+    })();
+
+    res.json({
+      ok: true,
+      filename: finalFilename,
+      models_dir: MODELS_DIR,
+    });
+  });
+
+  // Отмена активного скачивания модели
+  app.post('/api/models/cancel', (req: Request, res: Response) => {
+    const { filename } = req.body || {};
+    const task = activeDownloads.get(String(filename));
+    if (task && task.status === 'downloading' && task.abortController) {
+      task.abortController.abort();
+      task.status = 'cancelled';
+    }
+    res.json({ ok: true });
+  });
+
+  // Скачивание готового установочного файла для Windows (LAIChat-Windows-Setup.bat)
+  app.get('/api/installer/windows', (req: Request, res: Response) => {
+    const installerPath = path.resolve(process.cwd(), 'installer', 'setup-windows.bat');
+    if (!fs.existsSync(installerPath)) {
+      res.status(404).json({ error: 'Файл установщика не найден' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="LAIChat-Windows-Setup.bat"');
+    res.sendFile(installerPath);
+  });
+
+  // Включение/отключение доступа из локальной сети (LAN)
+  app.post('/api/lan-access', (req: Request, res: Response) => {
+    const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : !(appSettings.lan_access !== false);
+    appSettings = {
+      ...appSettings,
+      lan_access: enabled,
+    };
+    saveSettings(appSettings);
+    const lanIps = getLocalNetworkIPs();
+    res.json({
+      ok: true,
+      lan_access: enabled,
+      lan_ips: lanIps,
+      port: PORT,
+      urls: lanIps.map((ip) => `http://${ip}:${PORT}`),
+    });
+  });
+
   app.post('/api/config', (req: Request, res: Response) => {
     const s = req.body;
     if (typeof s !== 'object' || !s) {
@@ -931,12 +1529,12 @@ async function startServer() {
       return;
     }
 
-    if (s.context_size !== undefined && (s.context_size < 256 || s.context_size > 65536)) {
-      res.status(400).json({ error: 'context_size должен быть от 256 до 65536' });
+    if (s.context_size !== undefined && (s.context_size < 256 || s.context_size > 262144)) {
+      res.status(400).json({ error: 'context_size должен быть от 256 до 262144' });
       return;
     }
-    if (s.max_tokens !== undefined && (s.max_tokens < 1 || s.max_tokens > 8192)) {
-      res.status(400).json({ error: 'max_tokens должен быть от 1 до 8192' });
+    if (s.max_tokens !== undefined && (s.max_tokens < 1 || s.max_tokens > 32768)) {
+      res.status(400).json({ error: 'max_tokens должен быть от 1 до 32768' });
       return;
     }
     if (s.temperature !== undefined && (s.temperature < 0 || s.temperature > 2)) {

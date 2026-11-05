@@ -23,6 +23,10 @@ import {
   CheckCircle,
   AlertCircle,
   Play,
+  Wifi,
+  Copy,
+  Check,
+  Download,
 } from 'lucide-react';
 import { renderMarkdown } from '../utils/markdown';
 
@@ -42,6 +46,7 @@ interface SidebarProps {
   onRestartServer: () => Promise<void>;
   messageCount: number;
   onOpenConverter?: () => void;
+  onOpenModelDownloader?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -60,6 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRestartServer,
   messageCount,
   onOpenConverter,
+  onOpenModelDownloader,
 }) => {
   // Settings local state
   const [localSettings, setLocalSettings] = useState<Settings>(settings);
@@ -85,6 +91,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [editorTab, setEditorTab] = useState<'write' | 'preview'>('write');
   const [isSavingBase, setIsSavingBase] = useState(false);
   const [isGeneratingDesc, setIsGeneratingDesc] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [isTogglingLan, setIsTogglingLan] = useState(false);
+
+  const lanIps = serverState?.lan_ips ?? [];
+  const serverPort = serverState?.port ?? 3000;
+  const isLanEnabled = localSettings.lan_access !== false;
+
+  const handleToggleLanAccess = async () => {
+    const nextVal = !isLanEnabled;
+    setIsTogglingLan(true);
+    try {
+      const updated = { ...localSettings, lan_access: nextVal };
+      setLocalSettings(updated);
+      await fetch('/api/lan-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextVal }),
+      });
+      await onSaveSettings(updated);
+    } catch (err) {
+      console.warn('LAN access toggle error:', err);
+    } finally {
+      setIsTogglingLan(false);
+    }
+  };
+
+  const handleCopyUrl = (url: string) => {
+    navigator.clipboard.writeText(url).catch(() => {});
+    setCopiedUrl(url);
+    setTimeout(() => {
+      setCopiedUrl((prev) => (prev === url ? null : prev));
+    }, 2000);
+  };
 
   const handleGenAIDescription = async () => {
     if (!editorContent.trim() && !editorName.trim()) return;
@@ -311,6 +350,82 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Server className="w-3.5 h-3.5" />
               <span>Проверить соединение с LLM</span>
             </button>
+
+            {/* Кнопка: Сделать доступным из локальной сети */}
+            <div className="pt-2 border-t border-white/10 space-y-2">
+              <button
+                type="button"
+                onClick={handleToggleLanAccess}
+                disabled={isTogglingLan}
+                className={`w-full btn btn-sm !py-2.5 text-xs flex items-center justify-between px-3 transition-all cursor-pointer ${
+                  isLanEnabled
+                    ? 'border-[var(--green)]/40 bg-[var(--green)]/10 text-white hover:border-[var(--green)]'
+                    : 'border-white/15 bg-black/30 text-[var(--muted)] hover:text-white hover:border-[var(--cyan)]'
+                }`}
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <Wifi
+                    className={`w-3.5 h-3.5 ${
+                      isLanEnabled ? 'text-[var(--green)]' : 'text-[var(--muted)]'
+                    }`}
+                  />
+                  <span>Сделать доступным из локальной сети</span>
+                </span>
+                <span
+                  className={`font-mono text-[9px] uppercase px-2 py-0.5 rounded-full border ${
+                    isLanEnabled
+                      ? 'bg-[var(--green)]/20 text-[var(--green)] border-[var(--green)]/40'
+                      : 'bg-black/40 text-[var(--muted)] border-white/10'
+                  }`}
+                >
+                  {isLanEnabled ? 'вкл' : 'выкл'}
+                </span>
+              </button>
+
+              {isLanEnabled && (
+                <div className="p-2.5 rounded-xl bg-black/40 border border-[var(--green)]/25 space-y-1.5 text-[11px]">
+                  <div className="text-[10px] text-[var(--muted)] flex items-center justify-between">
+                    <span>Адреса в локальной сети (0.0.0.0:{serverPort}):</span>
+                    <span className="text-[var(--green)] font-mono text-[9px]">LAN активен</span>
+                  </div>
+                  {lanIps.length > 0 ? (
+                    lanIps.map((ip) => {
+                      const url = `http://${ip}:${serverPort}`;
+                      return (
+                        <div
+                          key={ip}
+                          className="flex items-center justify-between gap-2 bg-black/50 px-2.5 py-1.5 rounded-lg border border-white/10 font-mono text-xs text-[var(--cyan)]"
+                        >
+                          <span className="truncate">{url}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyUrl(url)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/15 text-white/80 hover:text-white flex items-center gap-1 shrink-0 cursor-pointer"
+                            title="Скопировать адрес для открытия в локальной сети"
+                          >
+                            {copiedUrl === url ? (
+                              <>
+                                <Check className="w-3 h-3 text-[var(--green)]" />
+                                <span className="text-[var(--green)]">Скопировано</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Копировать</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-[10px] text-[var(--muted)] font-mono">
+                      http://&lt;IP-вашего-ПК&gt;:{serverPort}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -673,10 +788,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   />
                   {localModels.length === 0 ? (
                     <div className="text-[9px] text-[var(--amber)] mt-1">
-                      В папке models/ нет .gguf — положите туда модель.
+                      В папке models/ нет .gguf — скачайте модель кнопкой ниже или положите файл вручную.
                     </div>
                   ) : null}
                 </div>
+
+                {onOpenModelDownloader && (
+                  <button
+                    type="button"
+                    onClick={onOpenModelDownloader}
+                    className="w-full btn btn-sm !py-2 text-xs border-[var(--cyan)]/40 bg-[var(--cyan)]/10 text-[var(--cyan)] hover:bg-[var(--cyan)]/20 flex items-center justify-center gap-2 font-semibold cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Скачать модели</span>
+                  </button>
+                )}
 
                 <div>
                   <label className="text-[10px] font-mono text-[var(--muted)] block mb-1">
@@ -742,7 +868,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   parallel_analysis: !(localSettings.parallel_analysis !== false),
                 })
               }
-              className="w-full flex items-center justify-between gap-3 p-2.5 rounded-xl border border-white/10 bg-black/20 hover:border-white/20 transition-all text-left"
+              className="w-full flex items-center justify-between gap-3 p-2.5 rounded-xl border border-white/10 bg-black/20 hover:border-white/20 transition-all text-left cursor-pointer"
             >
               <div className="min-w-0">
                 <div className="text-[11px] font-semibold text-white">
@@ -762,6 +888,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 {localSettings.parallel_analysis !== false ? 'вкл' : 'выкл'}
+              </span>
+            </button>
+
+            {/* Кнопка: Сделать доступным из локальной сети */}
+            <button
+              type="button"
+              onClick={() =>
+                setLocalSettings({
+                  ...localSettings,
+                  lan_access: !(localSettings.lan_access !== false),
+                })
+              }
+              className="w-full flex items-center justify-between gap-3 p-2.5 rounded-xl border border-white/10 bg-black/20 hover:border-white/20 transition-all text-left cursor-pointer"
+            >
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold text-white flex items-center gap-1.5">
+                  <Wifi className="w-3.5 h-3.5 text-[var(--cyan)]" />
+                  <span>Сделать доступным из локальной сети</span>
+                </div>
+                <div className="text-[9px] text-[var(--muted)] mt-0.5 leading-snug">
+                  {localSettings.lan_access !== false
+                    ? `Доступ открыт по LAN (${lanIps[0] ? `http://${lanIps[0]}:${serverPort}` : `0.0.0.0:${serverPort}`})`
+                    : 'Доступ разрешён только с этого компьютера (localhost)'}
+                </div>
+              </div>
+              <span
+                className={`shrink-0 font-mono text-[9px] uppercase tracking-wider px-2 py-1 rounded-full border transition-all ${
+                  localSettings.lan_access !== false
+                    ? 'bg-[var(--prism-soft)] text-[var(--green)] border-[var(--green)]/40'
+                    : 'bg-black/40 text-[var(--muted)] border-white/10'
+                }`}
+              >
+                {localSettings.lan_access !== false ? 'вкл' : 'выкл'}
               </span>
             </button>
 
@@ -790,27 +949,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
-          {/* Context size */}
+          {/* Context size (up to 1/4 million tokens = 250,000) */}
           <div className="space-y-1.5">
             <div className="flex justify-between items-center text-xs font-semibold">
-              <span>Контекст</span>
-              <span className="font-mono text-[var(--accent)]">{localSettings.context_size}</span>
+              <span>Контекст (до 1/4 млн токенов)</span>
+              <span className="font-mono text-[var(--accent)]">
+                {localSettings.context_size.toLocaleString('ru-RU')}
+              </span>
             </div>
             <input
               type="range"
               min="512"
-              max="16384"
-              step="128"
-              value={localSettings.context_size}
+              max="250000"
+              step="512"
+              value={Math.min(250000, localSettings.context_size)}
               style={{
-                ['--val' as any]: `${((localSettings.context_size - 512) / (16384 - 512)) * 100}%`,
+                ['--val' as any]: `${((Math.min(250000, localSettings.context_size) - 512) / (250000 - 512)) * 100}%`,
               }}
               onChange={(e) =>
                 setLocalSettings({ ...localSettings, context_size: parseInt(e.target.value, 10) })
               }
             />
+            <div className="grid grid-cols-5 gap-1 pt-0.5">
+              {[
+                { label: '4K', value: 4096 },
+                { label: '16K', value: 16384 },
+                { label: '64K', value: 65536 },
+                { label: '128K', value: 131072 },
+                { label: '250K (¼M)', value: 250000 },
+              ].map((preset) => (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() =>
+                    setLocalSettings({ ...localSettings, context_size: preset.value })
+                  }
+                  className={`py-1 rounded-lg text-[10px] font-mono border transition-all cursor-pointer ${
+                    localSettings.context_size === preset.value
+                      ? 'border-[var(--accent)] bg-[var(--prism-soft)] text-white font-semibold'
+                      : 'border-white/10 bg-black/30 text-[var(--muted)] hover:text-white hover:border-white/25'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
             <small className="block text-[10px] text-[var(--muted)]">
-              Сколько токенов модель помнит в диалоге.
+              Сколько токенов модель помнит в диалоге (до 250 000 токенов).
             </small>
           </div>
 

@@ -10,12 +10,15 @@ import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { ToastContainer } from './components/Toast';
 import { DocumentConverterModal } from './components/DocumentConverterModal';
+import { ModelDownloaderModal } from './components/ModelDownloaderModal';
 import { ArrowLeft, Sparkles, ExternalLink } from 'lucide-react';
+import robotWolfLogo from './assets/images/robot_wolf_logo_1793872150250.jpg';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'settings' | 'bases'>('chat');
   const [serverState, setServerState] = useState<ServerState | null>(null);
   const [isConverterOpen, setIsConverterOpen] = useState(false);
+  const [isModelDownloaderOpen, setIsModelDownloaderOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>({
     context_size: 4096,
     threads: 8,
@@ -321,9 +324,12 @@ export default function App() {
         {/* Minimal Standalone Header */}
         <header className="flex-none flex items-center justify-between px-5 py-3 bg-[#0a0a0f]/90 backdrop-blur-xl border-b border-[var(--border)] z-30">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-[var(--prism)] grid place-items-center text-[#0a0a0f] font-mono font-bold text-sm shadow-[var(--glow-pink)]">
-              L
-            </div>
+            <img
+              src={robotWolfLogo}
+              alt="LAIChat — Волчонок-робот"
+              referrerPolicy="no-referrer"
+              className="w-9 h-9 rounded-xl object-cover border border-[var(--cyan)]/40 shadow-[var(--glow-pink)]"
+            />
             <div className="flex items-center gap-2">
               <span className="font-bold text-base tracking-tight text-white">LAIChat</span>
               <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-[var(--prism-soft)] text-[var(--cyan)] border border-[var(--cyan)]/30">
@@ -403,6 +409,7 @@ export default function App() {
               onRestartServer={handleRestartServer}
               messageCount={messages.length}
               onOpenConverter={() => setIsConverterOpen(true)}
+              onOpenModelDownloader={() => setIsModelDownloaderOpen(true)}
             />
           </div>
 
@@ -428,6 +435,26 @@ export default function App() {
           refreshBases();
           refreshState();
           addToast('✓ Базы знаний успешно импортированы', 'ok');
+        }}
+      />
+
+      {/* Hugging Face GGUF Model Downloader Modal */}
+      <ModelDownloaderModal
+        isOpen={isModelDownloaderOpen}
+        onClose={() => setIsModelDownloaderOpen(false)}
+        onModelDownloaded={async (modelBaseName) => {
+          await refreshState();
+          if (modelBaseName) {
+            const updated: Settings = {
+              ...settings,
+              backend_provider: 'llama_cpp',
+              model_name: modelBaseName,
+            };
+            await handleSaveSettings(updated);
+            addToast(`✓ Модель «${modelBaseName}.gguf» готова и выбрана`, 'ok');
+          } else {
+            addToast('✓ Список локальных моделей обновлён', 'ok');
+          }
         }}
       />
 
