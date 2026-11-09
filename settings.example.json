@@ -1,12 +1,14 @@
 {
-  "context_size": 4096,
+  "context_size": 16384,
   "threads": 8,
   "max_tokens": 1024,
   "temperature": 0.7,
   "top_p": 0.9,
-  "backend_provider": "gemini",
+  "backend_provider": "llama_cpp",
   "llama_server_url": "http://127.0.0.1:8080",
   "openai_base_url": "https://api.openai.com/v1",
   "openai_api_key": "",
-  "model_name": "gemini-2.5-flash"
+  "model_name": "model",
+  "request_timeout": 300,
+  "parallel_analysis": true
 }

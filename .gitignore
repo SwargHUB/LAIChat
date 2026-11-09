@@ -6,6 +6,7 @@ coverage/
 .env*
 !.env.example
 bun.lock
+server.js
 
 # ===== Бинари llama.cpp (скачиваются отдельно) =====
 bin/
@@ -16,20 +17,16 @@ llama-server.exe
 models/
 *.gguf
 
-# ===== Сборка =====
-go-chat-local
-go-chat-local.exe
-*.exe
-*.dll
-*.so
-*.dylib
-
 # ===== Локальные настройки (машина-зависимые) =====
 settings.json
 
 # ===== Логи =====
 *.log
 llama-server.log
+
+# ===== Сборка установщика (в git не идёт) =====
+# Собирается скриптом installer\build.ps1
+installer/payload/
 
 # ===== Дизайн-черновики =====
 html2.html
@@ -46,8 +43,3 @@ bases/отпуски2.md
 *.swp
 .DS_Store
 Thumbs.db
-
-# ===== Go =====
-*.test
-*.out
-vendor/

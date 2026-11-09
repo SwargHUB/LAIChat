@@ -1,9 +1,8 @@
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { BM25Index, tokenize, DocumentChunk } from './searchEngine';
@@ -1614,10 +1613,24 @@ async function startServer() {
     res.json({ ok: true, count: baseManager.count(), issues: baseManager.issues() });
   });
 
-  app.post('/api/restart', (req: Request, res: Response) => {
-    // Health check / server refresh
+  app.post('/api/restart', async (req: Request, res: Response) => {
+    // Перечитываем базы
     baseManager.reload();
-    res.json({ ok: true, message: 'Сервер и базы знаний обновлены' });
+
+    // И перезапускаем локальный сервер модели, если он наш
+    let modelRestarted = false;
+    if (appSettings.backend_provider === 'llama_cpp') {
+      stopLlamaServer();
+      modelRestarted = await ensureLlamaServer();
+    }
+
+    res.json({
+      ok: true,
+      message: modelRestarted
+        ? 'Сервер модели перезапущен, базы знаний обновлены'
+        : 'Сервер и базы знаний обновлены',
+      model_restarted: modelRestarted,
+    });
   });
 
   app.post('/api/chat', async (req: Request, res: Response) => {
@@ -1758,12 +1771,24 @@ async function startServer() {
     });
   });
 
-  // Document conversion (DOCX/PDF to Markdown & chunks)
+  // Document conversion (DOCX/MD/TXT to Markdown & chunks)
   app.post('/api/convert-doc', async (req: Request, res: Response) => {
     try {
       const { filename, dataBase64, strategy, chunkSize } = req.body;
       if (!filename || !dataBase64) {
         res.status(400).json({ error: 'Не передано имя файла или содержимое' });
+        return;
+      }
+
+      const ext = (filename.split('.').pop() || '').toLowerCase();
+      const ALLOWED_EXT = ['docx', 'md', 'txt', 'markdown'];
+      if (!ALLOWED_EXT.includes(ext)) {
+        res.status(400).json({
+          error:
+            ext === 'pdf'
+              ? 'Разбор PDF отключён. Откройте файл и сохраните как .txt или .md, затем импортируйте его.'
+              : `Неподдерживаемый формат «.${ext}». Поддерживаются: ${ALLOWED_EXT.join(', ')}`,
+        });
         return;
       }
 
@@ -1934,23 +1959,181 @@ async function startServer() {
 
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV === 'production') {
-    const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req: Request, res: Response) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    serveStaticDist(app);
   } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    // Vite нужен только в режиме разработки. В production-сборке его нет в
+    // зависимостях, поэтому импортируем динамически. Если модуля нет
+    // (запуск без NODE_ENV=production) — отдаём собранный dist/, а не падаем.
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch {
+      console.warn('[server] Vite недоступен — отдаю статику из dist/');
+      serveStaticDist(app);
+    }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`LAIChat server running at http://0.0.0.0:${PORT}`);
+    // Открываем браузер, если не запрещено переменной окружения
+    if (process.env.LAICHAT_OPEN_BROWSER !== '0') {
+      setTimeout(() => openInBrowser(`http://127.0.0.1:${PORT}`), 700);
+    }
+  });
+
+  // Локальный llama-server поднимаем сами, если он ещё не работает —
+  // иначе после установки приложение стартует «пустым».
+  await ensureLlamaServer();
+}
+
+/** Отдаёт собранный фронтенд из dist/ (используется в production). */
+function serveStaticDist(app: express.Application): void {
+  const distPath = path.resolve(process.cwd(), 'dist');
+  app.use(express.static(distPath));
+  app.get('*', (req: Request, res: Response) => {
+    res.sendFile(path.join(distPath, 'index.html'));
   });
 }
+
+/** Открывает URL в системном браузере по умолчанию. */
+function openInBrowser(url: string): void {
+  const cmd =
+    process.platform === 'win32'
+      ? ['rundll32', 'url.dll,FileProtocolHandler', url]
+      : process.platform === 'darwin'
+      ? ['open', url]
+      : ['xdg-open', url];
+  try {
+    spawn(cmd[0], cmd.slice(1), { detached: true, stdio: 'ignore' }).unref();
+  } catch {
+    /* не критично */
+  }
+}
+
+// =====================================================================
+// УПРАВЛЕНИЕ ЛОКАЛЬНЫМ llama-server
+// =====================================================================
+
+let llamaProcess: any = null;
+
+function findLlamaBinary(): string | null {
+  const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+  const roots = [process.cwd(), path.resolve(process.cwd(), '..'), path.resolve(process.cwd(), '../..')];
+  for (const root of roots) {
+    const candidate = path.join(root, 'bin', exe);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findLocalModel(): string | null {
+  const dir = path.resolve(process.cwd(), 'models');
+  try {
+    if (!fs.existsSync(dir)) return null;
+    const file = fs
+      .readdirSync(dir)
+      .filter((f) => f.toLowerCase().endsWith('.gguf'))
+      .sort()[0];
+    return file ? path.join(dir, file) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function isLlamaHealthy(): Promise<boolean> {
+  const base = (appSettings.llama_server_url || 'http://127.0.0.1:8080').replace(/\/$/, '');
+  try {
+    const resp = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1500) });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Поднимает llama-server, если он не отвечает. Работает, только если
+ * сервер запускаем мы сами: чужой процесс не трогаем.
+ */
+async function ensureLlamaServer(): Promise<boolean> {
+  if (appSettings.backend_provider !== 'llama_cpp') return false;
+  if (await isLlamaHealthy()) {
+    console.log('[llama] Сервер уже отвечает, пропускаем запуск');
+    return true;
+  }
+
+  const binary = findLlamaBinary();
+  const model = findLocalModel();
+  if (!binary || !model) {
+    console.warn('[llama] Не найден бинарь или модель — сервер не будет запущен');
+    console.warn(`[llama]  бинарь: ${binary || 'не найден в ./bin/'}`);
+    console.warn(`[llama]  модель: ${model || 'не найдена в ./models/'}`);
+    return false;
+  }
+
+  const { spawn } = await import('child_process');
+  const args = [
+    '-m', model,
+    '-c', String(appSettings.context_size || 4096),
+    '-t', String(appSettings.threads || 4),
+    '--host', '127.0.0.1',
+    '--port', '8080',
+  ];
+
+console.log(`[llama] Запускаю ${path.basename(binary)} -m ${path.basename(model)}`);
+  try {
+    llamaProcess = spawn(binary, args, {
+      cwd: path.dirname(binary),
+      stdio: 'ignore',
+      detached: false,
+    });
+    llamaProcess.on('error', (e: any) => console.error('[llama] Ошибка запуска:', e.message));
+  } catch (e: any) {
+    console.error('[llama] Не удалось запустить:', e?.message);
+    return false;
+  }
+
+  // Ждём готовности до 60 секунд
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if (await isLlamaHealthy()) {
+      console.log('[llama] Готов');
+      return true;
+    }
+    if (llamaProcess && llamaProcess.exitCode !== null) {
+      console.error('[llama] Процесс завершился с кодом', llamaProcess.exitCode);
+      return false;
+    }
+  }
+  console.error('[llama] Не ответил за 60 секунд');
+  return false;
+}
+
+/** Останавливает llama-server, если мы его запускали. */
+function stopLlamaServer(): void {
+  if (llamaProcess && !llamaProcess.killed) {
+    try {
+      llamaProcess.kill();
+      console.log('[llama] Остановлен');
+    } catch {
+      /* игнорируем */
+    }
+  }
+  llamaProcess = null;
+}
+
+process.on('exit', stopLlamaServer);
+process.on('SIGINT', () => {
+  stopLlamaServer();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  stopLlamaServer();
+  process.exit(0);
+});
 
 startServer().catch((err) => {
   console.error('Fatal server startup error:', err);

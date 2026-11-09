@@ -46,7 +46,7 @@ export const DocumentConverterModal: React.FC<DocumentConverterModalProps> = ({
   const [description, setDescription] = useState('');
   const [markdown, setMarkdown] = useState('');
   const [chunks, setChunks] = useState<ChunkInfo[]>([]);
-  const [format, setFormat] = useState<'docx' | 'pdf' | 'md' | 'txt' | ''>('');
+  const [format, setFormat] = useState<'docx' | 'md' | 'txt' | ''>('');
   const [selectedChunkIdx, setSelectedChunkIdx] = useState<number | null>(null);
   const [importMode, setImportMode] = useState<'single-base' | 'split-bases'>('single-base');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -206,7 +206,7 @@ export const DocumentConverterModal: React.FC<DocumentConverterModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
-                Конвертер DOCX / PDF в Markdown и разбиение на чанки
+                Конвертер DOCX в Markdown и разбиение на чанки
               </h2>
               <p className="text-xs text-[var(--muted)]">
                 Автоматическая очистка, выделение заголовков и индексация для локальных LLM
@@ -235,7 +235,7 @@ export const DocumentConverterModal: React.FC<DocumentConverterModalProps> = ({
           <div className="p-6 rounded-3xl bg-black/30 border-2 border-dashed border-white/15 hover:border-[var(--accent)]/50 transition-colors text-center relative group">
             <input
               type="file"
-              accept=".docx,.pdf,.md,.txt"
+              accept=".docx,.md,.txt"
               onChange={handleFileSelect}
               className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
             />
@@ -244,7 +244,7 @@ export const DocumentConverterModal: React.FC<DocumentConverterModalProps> = ({
                 <Upload className="w-6 h-6" />
               </div>
               <div className="text-sm font-semibold text-white">
-                {file ? file.name : 'Выберите или перетащите файл DOCX, PDF, MD или TXT'}
+                {file ? file.name : 'Выберите или перетащите файл DOCX, MD или TXT'}
               </div>
               <div className="text-xs text-[var(--muted)]">
                 Поддерживаются официальные документы, регламенты, инструкции и книги

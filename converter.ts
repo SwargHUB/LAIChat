@@ -1,5 +1,4 @@
 import * as mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
 import { DocumentChunk, tokenize } from './searchEngine';
 
 export interface ChunkInfo {
@@ -12,9 +11,11 @@ export interface ChunkInfo {
   wordCount: number;
 }
 
+export type DocFormat = 'docx' | 'md' | 'txt';
+
 export interface ConversionResult {
   filename: string;
-  originalFormat: 'docx' | 'pdf' | 'md' | 'txt';
+  originalFormat: DocFormat;
   markdown: string;
   charCount: number;
   chunks: ChunkInfo[];
@@ -48,7 +49,7 @@ export function cleanMarkdownImages(text: string): string {
 export async function convertDocumentToMarkdown(
   filename: string,
   buffer: Buffer
-): Promise<{ markdown: string; format: 'docx' | 'pdf' | 'md' | 'txt' }> {
+): Promise<{ markdown: string; format: DocFormat }> {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
 
   if (ext === 'docx') {
@@ -64,49 +65,13 @@ export async function convertDocumentToMarkdown(
     return { markdown: md, format: 'docx' };
   }
 
+  // PDF-разбор отключён: он тянул за собой pdfjs-dist и @napi-rs/canvas
+  // (~90 МБ) ради одной функции. Скачанный PDF сначала откройте и сохраните
+  // как .txt или .md, либо сконвертируйте через «Импорт документа».
   if (ext === 'pdf') {
-    try {
-      const parser = new (PDFParse as any)({ data: buffer, verbosity: 0 });
-      await parser.load();
-      const textResult = await parser.getText();
-      const text = typeof textResult === 'string' ? textResult : (textResult?.text || '');
-
-      const rawPages: string[] = text.split(/\f|\n(?=Page \d+|\f|\d+\s+of\s+\d+)/i);
-      let md = '';
-
-      if (rawPages.length > 1) {
-        md = rawPages
-          .map((p: string, idx: number) => {
-            const trimmed = p.trim();
-            if (!trimmed) return '';
-            return `## Раздел (Страница ${idx + 1})\n\n${trimmed}`;
-          })
-          .filter(Boolean)
-          .join('\n\n---\n\n');
-      } else {
-        const lines: string[] = text.split('\n');
-        const formattedLines: string[] = [];
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (
-            /^(\d+\.|\d+\.\d+\.?|[A-ZА-ЯЁ\s]{4,}|Глава|Раздел|Статья)\s+[A-ZА-ЯЁ]/u.test(trimmed) &&
-            trimmed.length < 80
-          ) {
-            formattedLines.push(`\n## ${trimmed}\n`);
-          } else {
-            formattedLines.push(trimmed);
-          }
-        }
-        md = formattedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-      }
-
-      md = cleanMarkdownImages(md || text);
-      return { markdown: md, format: 'pdf' };
-    } catch (err: any) {
-      console.warn('PDF parsing error fallback:', err);
-      const rawText = buffer.toString('utf-8');
-      return { markdown: cleanMarkdownImages(rawText), format: 'pdf' };
-    }
+    throw new Error(
+      'Разбор PDF отключён. Откройте файл и сохраните как .txt или .md, затем импортируйте его.'
+    );
   }
 
   // Fallback for .md, .txt

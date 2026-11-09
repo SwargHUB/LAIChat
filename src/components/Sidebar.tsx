@@ -1124,10 +1124,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   onClick={onOpenConverter}
                   className="btn btn-sm !px-2.5 !py-1 text-xs text-[var(--accent)] border-[var(--accent)]/30 hover:border-[var(--accent)]"
-                  title="Импорт DOCX / PDF и разбиение на части"
+                  title="Импорт DOCX и разбиение на части"
                 >
                   <FileUp className="w-3.5 h-3.5" />
-                  <span>Импорт DOCX/PDF</span>
+                  <span>Импорт DOCX</span>
                 </button>
               )}
               <button
