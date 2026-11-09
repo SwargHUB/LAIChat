@@ -177,9 +177,46 @@ interface CatalogModel {
   description: string;
   tags: string[];
   recommended_for: ('low' | 'medium' | 'high' | 'ultra')[];
+  /** Модель по умолчанию — предлагается первой и помечается в UI */
+  is_default?: boolean;
 }
 
 const CURATED_HF_MODELS: CatalogModel[] = [
+  {
+    id: 'qwen3-8b-instruct-q4',
+    name: 'Qwen3 8B Instruct',
+    repo: 'Qwen/Qwen3-8B-GGUF',
+    filename: 'Qwen3-8B-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
+    size_gb: 5.03,
+    min_ram_gb: 10,
+    params: '8B',
+    quantization: 'Q4_K_M',
+    context_length: 32768,
+    description:
+      'Модель по умолчанию. Новое поколение Qwen: заметно лучше понимает русский язык, следует системным инструкциям и уверенно работает с базами знаний. Требует 10 ГБ ОЗУ.',
+    tags: ['По умолчанию', 'Русский язык', 'RAG', 'Точные ответы'],
+    recommended_for: ['medium', 'high', 'ultra'],
+    is_default: true,
+  },
+  {
+    id: 'qwen3-4b-instruct-q4',
+    name: 'Qwen3 4B Instruct',
+    repo: 'Qwen/Qwen3-4B-GGUF',
+    filename: 'Qwen3-4B-Q4_K_M.gguf',
+    download_url:
+      'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
+    size_gb: 2.5,
+    min_ram_gb: 6,
+    params: '4B',
+    quantization: 'Q4_K_M',
+    context_length: 32768,
+    description:
+      'То же поколение Qwen3, но вдвое легче. Хороший выбор для ноутбуков с 8 ГБ ОЗУ: качество выше, чем у Qwen 2.5 3B, при сопоставимом размере.',
+    tags: ['Русский язык', 'Для 8 ГБ ОЗУ', 'RAG'],
+    recommended_for: ['low', 'medium'],
+  },
   {
     id: 'qwen2.5-1.5b-instruct-q4',
     name: 'Qwen 2.5 1.5B Instruct',
@@ -1212,6 +1249,7 @@ async function startServer() {
       is_healthy: isHealthy,
       openai_key_configured: Boolean(process.env.OPENAI_API_KEY || appSettings.openai_api_key),
       local_models: discoverLocalModels(),
+      model_present: discoverLocalModels().length > 0,
       lan_ips: getLocalNetworkIPs(),
       port: PORT,
       bases_count: bases.length,
@@ -1255,6 +1293,14 @@ async function startServer() {
         is_downloaded: isDownloaded,
         fit_status: fitStatus,
       };
+    });
+
+    // Модель по умолчанию всегда первой: её предлагаем скачать, если
+    // в папке models/ ещё ничего нет.
+    models.sort((a, b) => {
+      if (a.is_default && !b.is_default) return -1;
+      if (!a.is_default && b.is_default) return 1;
+      return 0;
     });
 
     res.json({
@@ -1590,6 +1636,20 @@ async function startServer() {
         { role: 'user', content: 'Ответь кратко на русском: "Соединение успешно установлено"' },
       ];
 
+      // Локальный провайдер без модели — это не «ошибка соединения»,
+      // а отсутствие файла: сообщаем отдельным кодом, чтобы UI мог
+      // предложить скачать модель.
+      const isLocal = testSettings.backend_provider === 'llama_cpp';
+      if (isLocal && !findLocalModel()) {
+        res.status(400).json({
+          ok: false,
+          code: 'model_missing',
+          error:
+            'Модель не скачана. В папке models/ нет файлов .gguf — выберите и скачайте модель.',
+        });
+        return;
+      }
+
       const reply = await runLLM(testMsg, testSettings, 0.1, 50);
       res.json({ ok: true, message: 'Соединение успешно проверено!', reply });
     } catch (err: any) {
@@ -1617,19 +1677,41 @@ async function startServer() {
     // Перечитываем базы
     baseManager.reload();
 
+    const isLocal = appSettings.backend_provider === 'llama_cpp';
+    const modelPresent = isLocal ? !!findLocalModel() : true;
+
     // И перезапускаем локальный сервер модели, если он наш
     let modelRestarted = false;
-    if (appSettings.backend_provider === 'llama_cpp') {
+    if (isLocal) {
       stopLlamaServer();
       modelRestarted = await ensureLlamaServer();
     }
+    const llamaHealthy = isLocal ? await isLlamaHealthy() : false;
+
+    // Статус должен отражать реальность: раньше здесь всегда было ok:true,
+    // и UI рапортовал «соединение установлено» даже при мёртвой модели.
+    let message: string;
+    let ok = true;
+    if (!isLocal) {
+      message = 'Сервер и базы знаний обновлены';
+    } else if (!modelPresent) {
+      ok = false;
+      message = 'Модель не скачана — сервер модели не может быть запущен';
+    } else if (!llamaHealthy) {
+      ok = false;
+      message = 'Сервер модели не отвечает. Проверьте, что llama-server запущен.';
+    } else if (modelRestarted) {
+      message = 'Сервер модели перезапущен, базы знаний обновлены';
+    } else {
+      message = 'Сервер и базы знаний обновлены';
+    }
 
     res.json({
-      ok: true,
-      message: modelRestarted
-        ? 'Сервер модели перезапущен, базы знаний обновлены'
-        : 'Сервер и базы знаний обновлены',
+      ok,
+      message,
       model_restarted: modelRestarted,
+      model_present: modelPresent,
+      llama_healthy: llamaHealthy,
     });
   });
 

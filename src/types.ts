@@ -77,6 +77,8 @@ export interface ServerState {
   openai_key_configured?: boolean;
   /** .gguf, найденные в папке models/ */
   local_models?: string[];
+  /** Есть ли в папке models/ хоть одна модель */
+  model_present?: boolean;
   /** Локальные IPv4-адреса в LAN */
   lan_ips?: string[];
   /** Порт веб-сервера */
@@ -120,6 +122,8 @@ export interface HuggingFaceModel {
   recommended_for?: ('low' | 'medium' | 'high' | 'ultra')[];
   is_downloaded?: boolean;
   fit_status?: 'optimal' | 'good' | 'heavy';
+  /** Модель по умолчанию — предлагается первой */
+  is_default?: boolean;
 }
 
 export interface ModelDownloadTask {

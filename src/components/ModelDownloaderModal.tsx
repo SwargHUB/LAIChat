@@ -401,7 +401,9 @@ export const ModelDownloaderModal: React.FC<ModelDownloaderModalProps> = ({
                 <div
                   key={model.id}
                   className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
-                    model.fit_status === 'optimal'
+                    model.is_default
+                      ? 'bg-black/50 border-[var(--accent)]/50 hover:border-[var(--accent)]/70 shadow-[0_0_0_1px_rgba(244,114,182,.25)]'
+                      : model.fit_status === 'optimal'
                       ? 'bg-black/40 border-[var(--green)]/35 hover:border-[var(--green)]/60'
                       : 'bg-black/30 border-white/10 hover:border-white/25'
                   }`}
@@ -414,6 +416,12 @@ export const ModelDownloaderModal: React.FC<ModelDownloaderModalProps> = ({
                           <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/10 text-[var(--cyan)]">
                             {model.params} · {model.quantization}
                           </span>
+                          {model.is_default && (
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/45 text-[var(--accent)] flex items-center gap-1">
+                              <Sparkles className="w-3 h-3" />
+                              По умолчанию
+                            </span>
+                          )}
                         </div>
                         <a
                           href={`https://huggingface.co/${model.repo}`}

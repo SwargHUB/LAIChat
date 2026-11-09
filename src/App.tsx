@@ -70,6 +70,8 @@ export default function App() {
   };
 
   const chatSectionRef = useRef<HTMLDivElement>(null);
+  // Показываем предложение скачать модель один раз за сессию
+  const modelPromptShown = useRef(false);
 
   const addToast = (text: string, type: 'ok' | 'err' | 'info' = 'ok') => {
     const id = `${Date.now()}-${Math.random()}`;
@@ -92,6 +94,16 @@ export default function App() {
         setServerState(data);
         if (data.config) {
           setSettings(data.config);
+        }
+        // Модели нет в папке models/ — сразу предлагаем её скачать,
+        // иначе чат не сможет работать вовсе.
+        if (
+          data.config?.backend_provider === 'llama_cpp' &&
+          data.model_present === false &&
+          !modelPromptShown.current
+        ) {
+          modelPromptShown.current = true;
+          setIsModelDownloaderOpen(true);
         }
       }
     } catch (err) {
@@ -242,9 +254,19 @@ export default function App() {
   const handleRestartServer = async () => {
     try {
       const res = await fetch('/api/restart', { method: 'POST' });
-      if (!res.ok) throw new Error('Ошибка связи с сервером');
+      const data = await res.json().catch(() => ({}));
       refreshState();
-      addToast('✓ Соединение с сервером проверено (активно)', 'ok');
+
+      // Статус от сервера отражает реальное состояние модели: раньше здесь
+      // всегда показывалось «соединение установлено», даже если LLM не отвечала.
+      if (data.model_present === false) {
+        addToast('Модель не скачана — нужна модель в папке models/', 'err');
+        setIsModelDownloaderOpen(true);
+      } else if (data.llama_healthy === false) {
+        addToast(data.message || 'Сервер модели не отвечает', 'err');
+      } else {
+        addToast(data.message || '✓ Сервер модели запущен', 'ok');
+      }
     } catch (err: any) {
       addToast(err.message || 'Ошибка проверки соединения', 'err');
     }
@@ -451,6 +473,17 @@ export default function App() {
               model_name: modelBaseName,
             };
             await handleSaveSettings(updated);
+            // Поднимаем сервер модели с новым файлом — до перезапуска
+            // llama-server продолжит работать со старой (или без модели).
+            try {
+              const rr = await fetch('/api/restart', { method: 'POST' });
+              const dj = await rr.json().catch(() => ({}));
+              if (dj.llama_healthy === false) {
+                addToast(dj.message || 'Сервер модели не отвечает', 'err');
+              }
+            } catch {
+              /* не критично */
+            }
             addToast(`✓ Модель «${modelBaseName}.gguf» готова и выбрана`, 'ok');
           } else {
             addToast('✓ Список локальных моделей обновлён', 'ok');

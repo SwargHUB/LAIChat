@@ -184,6 +184,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           success: false,
           message: data.error || 'Ошибка проверки соединения',
         });
+        // Модель не скачана — сразу предлагаем её загрузить
+        if (data.code === 'model_missing') {
+          onOpenModelDownloader?.();
+        }
       }
     } catch (err: any) {
       setTestConnStatus({
