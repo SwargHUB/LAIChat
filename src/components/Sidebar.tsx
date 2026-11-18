@@ -953,6 +953,73 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
+          {/* Системный промпт */}
+          <div className="space-y-2 pt-3 mt-3 border-t border-white/10">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--muted)]">
+                Системный промпт
+              </span>
+              {serverState?.system_prompt_is_custom ? (
+                <span className="text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/40 text-[var(--accent)]">
+                  изменён
+                </span>
+              ) : (
+                <span className="text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-[var(--muted)]">
+                  по умолчанию
+                </span>
+              )}
+            </div>
+
+            <textarea
+              value={localSettings.system_prompt ?? ''}
+              onChange={(e) =>
+                setLocalSettings({ ...localSettings, system_prompt: e.target.value })
+              }
+              placeholder={serverState?.default_system_prompt || ''}
+              rows={7}
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-[11px] text-white/90 focus:outline-none focus:border-[var(--accent)] resize-y leading-relaxed"
+              style={{ fontFamily: 'var(--mono)' }}
+            />
+
+            <div className="text-[9px] text-[var(--muted)] leading-snug">
+              Инструкция модели на каждый запрос. Пустое поле — используется встроенный
+              промпт. Чтобы модель не выдумывала, а брала факты только из базы:
+              «Отвечай ТОЛЬКО на основе источников. Нет в базе — так и скажи».
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setLocalSettings({
+                    ...localSettings,
+                    system_prompt:
+                      'Отвечай ТОЛЬКО на основе содержимого базы знаний, переданной в контексте.\n' +
+                      'Не выдумывай факты и не дополняй ответ общими знаниями извне.\n' +
+                      'Если в источниках нет ответа — прямо напиши: «В источниках этого нет».\n' +
+                      'Если база не передана или вопрос не связан с ней — не отвечай по памяти.\n' +
+                      'Указывай название базы-источника и цитируй конкретные фрагменты.',
+                  })
+                }
+                className="btn btn-sm !px-2.5 !py-1 text-[10px] border-[var(--green)]/40 text-[var(--green)] hover:bg-[var(--green)]/10"
+              >
+                Только из источников
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setLocalSettings({
+                    ...localSettings,
+                    system_prompt: serverState?.default_system_prompt || '',
+                  })
+                }
+                className="btn btn-sm !px-2.5 !py-1 text-[10px] border-white/15 text-white/70 hover:text-white"
+              >
+                Сбросить
+              </button>
+            </div>
+          </div>
+
           {/* Context size (up to 1/4 million tokens = 250,000) */}
           <div className="space-y-1.5">
             <div className="flex justify-between items-center text-xs font-semibold">
@@ -1098,14 +1165,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <button
-            onClick={async () => {
-              setIsSavingSettings(true);
-              try {
-                await onSaveSettings(localSettings);
-              } finally {
-                setIsSavingSettings(false);
-              }
-            }}
+onClick={async () => {
+                setIsSavingSettings(true);
+                try {
+                  const toSave = { ...localSettings };
+                  // Если текст совпадает со встроенным — сохраняем пустым,
+                  // чтобы настройка оставалась «по умолчанию», а не превращалась
+                  // в кастомную копию того же самого.
+                  const defPrompt = serverState?.default_system_prompt || '';
+                  if (defPrompt && toSave.system_prompt?.trim() === defPrompt.trim()) {
+                    toSave.system_prompt = '';
+                  }
+                  await onSaveSettings(toSave);
+                } finally {
+                  setIsSavingSettings(false);
+                }
+              }}
             disabled={isSavingSettings}
             className="w-full btn btn-primary mt-2"
           >

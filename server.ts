@@ -617,14 +617,34 @@ async function localServerReachable(isOllama: boolean): Promise<boolean> {
 }
 
 // In-memory conversation history
+
+/**
+ * Промпт по умолчанию. Ключевая идея: модель не должна додумывать факты,
+ * а опираться только на переданную базу знаний и честно признавать,
+ * когда ответа в источниках нет. Пользователь может заменить его
+ * в настройках (поле system_prompt).
+ */
 const DEFAULT_SYSTEM_PROMPT =
-  'Ты полезный AI-ассистент LAIChat. Отвечай подробно, структурированно и по делу. ' +
-  'Если в контексте передана база знаний — опирайся на неё и не придумывай факты, которых в ней нет.';
+  'Ты — AI-ассистент LAIChat, работающий с базами знаний.\n\n' +
+  'Главные правила:\n' +
+  '1. Отвечай ТОЛЬКО на основе содержимого базы знаний, переданной в контексте.\n' +
+  '2. Не выдумывай факты и не дополняй ответ общими знаниями извне.\n' +
+  '3. Если в источниках нет ответа — прямо напиши: «В источниках этого нет».\n' +
+  '4. Указывай название базы-источника и цитируй конкретные фрагменты.\n' +
+  '5. Если база знаний не передана или вопрос не связан с ней — не отвечай по памяти, ' +
+  'сообщи, что в источниках этого нет.\n' +
+  '6. Отвечай структурированно и по делу, на языке пользователя.';
+
+/** Текущий системный промпт: пользовательский, если задан, иначе умолчание. */
+function getSystemPrompt(): string {
+  const custom = (appSettings.system_prompt || '').trim();
+  return custom || DEFAULT_SYSTEM_PROMPT;
+}
 
 let chatHistory: ChatMessage[] = [
   {
     role: 'system',
-    content: DEFAULT_SYSTEM_PROMPT,
+    content: getSystemPrompt(),
   },
 ];
 
@@ -1240,11 +1260,14 @@ async function startServer() {
           : process.env.OPENAI_API_KEY
           ? '•••••••• (из .env)'
           : '',
-        model_name: appSettings.model_name || DEFAULT_SETTINGS.model_name,
-        request_timeout: Math.round(resolveTimeoutMs(appSettings, provider) / 1000),
-        parallel_analysis: appSettings.parallel_analysis !== false,
-        lan_access: appSettings.lan_access !== false,
-      },
+      model_name: appSettings.model_name || DEFAULT_SETTINGS.model_name,
+      request_timeout: Math.round(resolveTimeoutMs(appSettings, provider) / 1000),
+      parallel_analysis: appSettings.parallel_analysis !== false,
+      // Системный промпт: пользовательский либо умолчание
+      system_prompt: getSystemPrompt(),
+      default_system_prompt: DEFAULT_SYSTEM_PROMPT,
+      system_prompt_is_custom: Boolean((appSettings.system_prompt || '').trim()),
+    },
       server_url: serverUrl,
       is_healthy: isHealthy,
       openai_key_configured: Boolean(process.env.OPENAI_API_KEY || appSettings.openai_api_key),
@@ -1606,6 +1629,13 @@ async function startServer() {
 
     appSettings = updatedSettings;
     saveSettings(appSettings);
+
+    // Системный промпт применяется сразу, без перезапуска диалога:
+    // подменяем его в живой истории.
+    if (chatHistory.length > 0 && chatHistory[0].role === 'system') {
+      chatHistory[0].content = getSystemPrompt();
+    }
+
     res.json({ ok: true, settings: appSettings });
   });
 
@@ -1662,7 +1692,7 @@ async function startServer() {
     chatHistory = [
       {
         role: 'system',
-        content: DEFAULT_SYSTEM_PROMPT,
+        content: getSystemPrompt(),
       },
     ];
     res.json({ ok: true, msg_count: chatHistory.length });
@@ -1746,11 +1776,11 @@ async function startServer() {
       }
 
       // Step 3: Synthesis with chosen base context
-      const msgsToSend: ChatMessage[] = [];
+      // Собираем РОВНО ОДНО system-сообщение: пользовательский промпт плюс
+      // контекст базы. Раньше их было два, и шаблон llama.cpp оставлял только
+      // последнее — пользовательский промпт до модели не доходил вовсе.
       const historyCopy = [...chatHistory];
-
-      // Add prior history
-      msgsToSend.push(...historyCopy.slice(0, -1));
+      const systemParts: string[] = [getSystemPrompt()];
 
       if (chosenName) {
         const chosenBase = baseManager.getByName(chosenName);
@@ -1758,7 +1788,7 @@ async function startServer() {
           const otherHints = buildOtherHints(chosenName, analyses);
 
           // Smart Section Retrieval for low-power local LLMs:
-          // If the chosen base is larger than 1800 chars (e.g. multi-page document or converted DOCX/PDF),
+          // If the chosen base is larger than 1800 chars (e.g. multi-page document or converted DOCX),
           // retrieve the top 2-3 most relevant sections via BM25 instead of passing the entire document!
           let contextBody = chosenBase.content;
           if (chosenBase.content.length > 1800) {
@@ -1776,14 +1806,19 @@ async function startServer() {
             }
           }
 
-          const basePrompt =
+          systemParts.push(
             `Используй следующую базу знаний по теме «${chosenBase.name}» как ОСНОВНОЙ источник фактов. ` +
-            `Если в ней нет ответа — так и скажи.\n\n` +
-            `## База «${chosenBase.name}»\n${contextBody}${otherHints}`;
-
-          msgsToSend.push({ role: 'system', content: basePrompt });
+              `Если в ней нет ответа — так и скажи.\n\n` +
+              `## База «${chosenBase.name}»\n${contextBody}${otherHints}`
+          );
         }
       }
+
+      const msgsToSend: ChatMessage[] = [
+        { role: 'system', content: systemParts.join('\n\n') },
+      ];
+      // Прошлые ходы диалога — без служебного system-сообщения
+      msgsToSend.push(...historyCopy.slice(1, -1));
 
       // Add latest user query
       msgsToSend.push(historyCopy[historyCopy.length - 1]);

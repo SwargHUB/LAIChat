@@ -28,6 +28,8 @@ export interface Settings {
   parallel_analysis?: boolean;
   /** Доступность веб-интерфейса из локальной сети (LAN) */
   lan_access?: boolean;
+  /** Пользовательский системный промпт (если пусто — используется встроенный) */
+  system_prompt?: string;
 }
 
 export interface BaseAnalysis {
@@ -79,6 +81,10 @@ export interface ServerState {
   local_models?: string[];
   /** Есть ли в папке models/ хоть одна модель */
   model_present?: boolean;
+  /** Системный промпт по умолчанию — для кнопки сброса */
+  default_system_prompt?: string;
+  /** Отличается ли текущий промпт от умолчания */
+  system_prompt_is_custom?: boolean;
   /** Локальные IPv4-адреса в LAN */
   lan_ips?: string[];
   /** Порт веб-сервера */
